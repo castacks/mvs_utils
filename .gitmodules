@@ -1,0 +1,3 @@
+[submodule "ftensor"]
+	path = ftensor
+	url = git@github.com:huyaoyu/ftensor.git
