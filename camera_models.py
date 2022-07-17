@@ -1,4 +1,5 @@
 
+from numpy import poly
 import torch
 import math
 import sys
@@ -31,7 +32,7 @@ def xyz_2_z_angle(x, y, z):
 
 
 class CameraModel(object):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
         super(CameraModel, self).__init__()
 
         self.name = name
@@ -42,7 +43,15 @@ class CameraModel(object):
         self.fov_degree = fov_degree 
         self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
         
-        self.out_to_numpy = False
+        self.device = None
+        self.in_to_tensor = in_to_tensor
+        self.out_to_numpy = out_to_numpy
+
+    def in_wrap(self, x):
+        if self.in_to_tensor:
+            return torch.as_tensor(x).to(device=self.device)
+        else:
+            return x
 
     def out_wrap(self, x):
         if self.out_to_numpy:
@@ -75,15 +84,15 @@ class CameraModel(object):
     def to_(self, dtype=None, device=None):
         assert dtype is not None and device is not None, \
             f'dtype and device cannot both be None. '
-            
-        # Do nothing.
+        
+        self.device = device
 
 # The polynomial coefficents.
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 class DoubleSphere(CameraModel):
-    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree):
+    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
         super(DoubleSphere, self).__init__(
-            'double_sphere', fx, fy, cx, cy, fov_degree)
+            'double_sphere', fx, fy, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.alpha = alpha
         self.xi = xi
@@ -99,7 +108,7 @@ class DoubleSphere(CameraModel):
             if self.alpha <= 0.5 \
             else ( 1 - self.alpha ) / self.alpha
         
-        w2 = ( w1 + self.xi ) / torch.sqrt( 2 * w1 * self.xi + self.xi**2.0 + 1 )
+        w2 = ( w1 + self.xi ) / math.sqrt( 2 * w1 * self.xi + self.xi**2.0 + 1 )
 
         return w1, w2
 
@@ -116,6 +125,8 @@ class DoubleSphere(CameraModel):
         ray: A 3xN Tensor representing the 3D rays.
         valid_mask: A (N,) Tensor representing the valid mask.
         '''
+        
+        pixel_coor = self.in_wrap(pixel_coor)
         
         # mx and my becomes float64 if pixel_coor.dtype is integer type.
         mx = ( pixel_coor[0, :] - self.cx ) / self.fx
@@ -170,6 +181,8 @@ class DoubleSphere(CameraModel):
         valid_mask: A (N,) Tensor representing the valid mask.
         '''
 
+        point_3d = self.in_wrap(point_3d)
+
         x2 = point_3d[0, :]**2.0 # Note: this promotes x2 to torch.float64 if point_3d.dtype=torch.int. (May not be true for PyTorch.)
         y2 = point_3d[1, :]**2.0
         z2 = point_3d[2, :]**2.0
@@ -197,9 +210,9 @@ class DoubleSphere(CameraModel):
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
 
 class Equirectangular(CameraModel):
-    def __init__(self, cx, cy, lon_shift=0, open_span=True):
+    def __init__(self, cx, cy, lon_shift=0, open_span=True, in_to_tensor=False, out_to_numpy=False):
         super(Equirectangular, self).__init__(
-            'equirectangular', 1, 1, cx, cy, 360)
+            'equirectangular', 1, 1, cx, cy, 360, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.lon_shift = lon_shift
         self.longitude_span = torch.Tensor( [ -LOCAL_PI,   LOCAL_PI ]  ).to(dtype=torch.float32) + self.lon_shift
@@ -210,8 +223,8 @@ class Equirectangular(CameraModel):
         # that is measured in the original frame as
         a = -self.lon_shift
         self.R_ori_shifted = torch.Tensor(
-            [ [ torch.cos(a), -torch.sin(a) ], 
-              [ torch.sin(a),  torch.cos(a) ] ]
+            [ [ math.cos(a), -math.sin(a) ], 
+              [ math.sin(a),  math.cos(a) ] ]
             ).to(dtype=torch.float32)
 
         # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
@@ -241,6 +254,8 @@ class Equirectangular(CameraModel):
         ray: A 3xN Tensor representing the 3D rays.
         valid_mask: A (N,) Tensor representing the valid mask.
         '''
+        
+        pixel_coor = self.in_wrap(pixel_coor)
         
         pixel_space_center = \
             torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
@@ -273,6 +288,8 @@ class Equirectangular(CameraModel):
         valid_mask: A (N,) Tensor representing the valid mask.
         '''
         
+        point_3d = self.in_wrap(point_3d)
+        
         r = torch.linalg.norm(point_3d, dim=0)
         
         lat = torch.asin(point_3d[1, :] / r)
@@ -292,19 +309,28 @@ class Equirectangular(CameraModel):
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
     
-    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree):
+    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, in_to_tensor=False, out_to_numpy=False):
         '''
         The implementation is mostly based on 
         https://github.com/hyu-cvlab/omnimvs-pytorch/blob/3016a5c01f55c27eff3c019be9aee02e34aaaade/utils/ocam.py#L15
         
-        Note that we are not fliping the xy order as the original implementation. This also affects the
-        order of cx and cy.
+        When reading values for poly_coeff and inv_poly_coeff, make sure that the coefficients of 
+        higher order are listed first. If these values are read from the yaml file provided by omnimvs
+        model, then we need to reverse the order of the original data (also skip the first value that is
+        showing the total number of coefficients).
         
-        The Ocam model is described at
+        The CIF (Camera Image Frame) defined by Davide Scaramuzza (see below) if different than ours. 
+        The CIF here is originally defined as z-backward, y-right, and x-downward. So we need to convert
+        between our CIF and the CIF used by Davide when dealing with coordinates.
+        
+        Note that we are not fliping the order of cx and cy internally, meaning the input arguments must have the 
+        correct order (fliped outside this class) and we need to use self.cy for Davide's x-axis.
+        
+        The Ocam model is described by Davide Scaramuzza at
         https://sites.google.com/site/scarabotix/ocamcalib-omnidirectional-camera-calibration-toolbox-for-matlab
         '''
         
-        super().__init__('Ocam', 1, 1, cx, cy, fov_degree)
+        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
         
         # Polynomial coefficients starting from the highest degree.
         self.poly_coeff     = torch.as_tensor(poly_coeff).to(dtype=torch.float32)     # Only contains the coefficients.
@@ -322,7 +348,14 @@ class Ocam(CameraModel):
         '''
         Evaluate the polynomial.
         '''
-        return torch.sum( poly_coeff * x ** torch.arange(len(poly_coeff)-1, -1, -1, device=x.device), dim=0 )
+        # Exponent.
+        p = torch.arange(len(poly_coeff)-1, -1, -1, device=x.device).view((-1, 1))
+        
+        # Change shapes.
+        poly_coeff = poly_coeff.view((-1, 1))
+        x = x.view((1, -1))
+        
+        return torch.sum( poly_coeff * x ** p, dim=0 )
         
     def pixel_2_ray(self, pixel_coor):
         '''
@@ -334,39 +367,46 @@ class Ocam(CameraModel):
         valid_mask: A (N,) Tensor representing the valid mask.
         '''
 
+        pixel_coor = self.in_wrap(pixel_coor).to(dtype=torch.float32)
+
         p = torch.zeros_like(pixel_coor, device=pixel_coor.device)
-        # xy not fliped as the original implementation.
-        p[0, :] = pixel_coor[0, :] - self.cx
-        p[1, :] = pixel_coor[1, :] - self.cy
+        
+        # We need to use Davide's definition of the coordinate system.
+        p[0, :] = pixel_coor[1, :] - self.cy
+        p[1, :] = pixel_coor[0, :] - self.cx
         
         c, d, e = self.affine_coeff
         invdet = 1.0 / (c - d * e)
         
-        # A_inv = invdet * torch.Tensor( [
-        #     [  1, -d ], 
-        #     [ -e,  c ] ] ).to(dtype=pixel_coor.dtype, device=pixel_coor.device)
-        
         A_inv = invdet * torch.Tensor( [
-            [ -d,  1 ], 
-            [  c, -e ] ] ).to(dtype=pixel_coor.dtype, device=pixel_coor.device)
+            [  1, -d ], 
+            [ -e,  c ] ] ).to(dtype=pixel_coor.dtype, device=pixel_coor.device)
         
+        # A_inv = invdet * torch.Tensor( [
+        #     [ -d,  1 ], 
+        #     [  c, -e ] ] ).to(dtype=pixel_coor.dtype, device=pixel_coor.device)
+
         p = A_inv @ p
         
         x = p[0, :]
         y = p[1, :]
         
         rho = torch.sqrt( x**2 + y**2 )
-        
+
         z = Ocam.poly_eval( self.poly_coeff, rho )
         
         # theta is angle from the optical axis.
-        theta = torch.atan2(rho, -z) 
-        out   = torch.stack((x, y, -z), dim=0)
+        theta = torch.atan2(rho, -z)
+        
+        # Convert back to our coordinate system.
+        # out   = torch.stack((x, y, -z), dim=0)
+        out   = torch.stack((y, x, -z), dim=0)
         
         max_theta = self.fov_rad / 2.0
-        
-        return self.out_to_numpy( out ), \
-               self.out_to_numpy( theta <= max_theta )
+        valid_mask = theta <= max_theta
+
+        return self.out_wrap( out ), \
+               self.out_wrap( valid_mask )
         
     def point_3d_2_pixel(self, point_3d):
         '''
@@ -378,6 +418,8 @@ class Ocam(CameraModel):
         valid_mask: A (N,) Tensor representing the valid mask.
         '''   
         
+        point_3d = self.in_wrap(point_3d)
+        
         norm  = torch.sqrt( point_3d[0, :]**2 + point_3d[1, :]**2 ) + Ocam.EPS
         theta = torch.atan2( -point_3d[2, :], norm )
         rho   = Ocam.poly_eval( self.inv_poly_coeff, theta )
@@ -388,13 +430,14 @@ class Ocam(CameraModel):
         
         c, d, e = self.affine_coeff
         
-        # xy not fliped as the original implementation.
-        x = point_3d[0, :] / norm * rho
-        y = point_3d[1, :] / norm * rho
-        x2 = y * e + x     + self.cx
-        y2 = y * c + x * d + self.cy
+        # We need to use Davide's definition of the coordinate system.
+        y = point_3d[0, :] / norm * rho
+        x = point_3d[1, :] / norm * rho
+        x2 = x * c + y * d + self.cy
+        y2 = x * e + y     + self.cx
         
-        out = torch.stack( (x2, y2), dim=0 )
+        # Convert back to our coordinate system.
+        out = torch.stack( (y2, x2), dim=0 )
         
         return self.out_to_numpy( out ), \
                self.out_to_numpy( theta <= self.fov_rad / 2.0 )
