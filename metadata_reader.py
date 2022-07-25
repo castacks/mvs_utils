@@ -8,10 +8,12 @@ class MetadataReader():
     def __init__(self, data_dir):
         self.data_dir = data_dir
     
-    def read_metadata_and_initialize_dirs(self, args):
+    def read_metadata_and_initialize_dirs(self, args, create_dirs=True):
         '''
         Reads in the specified metadata file, which sets important variables such as number of cameras and their extrinsics.
         Also sets up the directory structure according to input args and the specified metadata.
+        
+        creawte_dirs: If True, creates the associated directory structure. 
         '''
         with open(args.metadata_path) as metadata_file:
 
@@ -33,8 +35,9 @@ class MetadataReader():
 
             #Make a rig directory and initialize the rigdata struct.
             self.rigpath = join(self.data_dir, "rig")
-            if not os.path.exists(self.rigpath):
-                os.mkdir(self.rigpath)
+            if create_dirs:
+                if not os.path.exists(self.rigpath):
+                    os.mkdir(self.rigpath)
 
             rigdata = dict(
                 path=self.rigpath,
@@ -55,8 +58,9 @@ class MetadataReader():
                 #For each camera, create a directory and index that directory in the csv index.
                 cpath = join(self.data_dir, f"cam{i}")
                 cam_headers.append(cpath)
-                if not os.path.exists(cpath):
-                    os.mkdir(cpath)
+                if create_dirs:
+                    if not os.path.exists(cpath):
+                        os.mkdir(cpath)
 
                 #Also create a camera data struct that holds all important data for data collection
                 cdata = dict(
