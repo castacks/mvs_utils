@@ -83,6 +83,8 @@ class MetadataReader():
                         self.cam_to_camdata.update({
                             i:cdata
                         })
+
+                        self.rigpath = cdata["path"]
                     
                 self.cam_to_camdata.update({
                     i:cdata
@@ -109,6 +111,8 @@ class MetadataReader():
             #Place the headers at the top of the csv index
             self.cam_paths_list.append(cam_headers)
             self.rig_paths_list.append(self.metadata["rig_img_types"])
+
+            print(self.rig_paths_list)
 
             #To initialize the ImageClient, a default cam list and image type is needed.
             #The image types can be changed on-the-fly later in the pipeline.
