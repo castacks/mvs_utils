@@ -1,10 +1,38 @@
 
+import copy
 from numpy import poly
 import torch
 import math
 import sys
 
+CAMERA_MODELS = dict()
+
 LOCAL_PI = math.pi
+
+def register(dst):
+    '''Register a class to a dstination dictionary. '''
+    def dec_register(cls):
+        dst[cls.__name__] = cls
+        return cls
+    return dec_register
+
+def make_object(typeD, argD):
+    '''Make an object from type collection typeD. '''
+
+    assert( isinstance(typeD, dict) ), f'typeD must be dict. typeD is {type(typeD)}'
+    assert( isinstance(argD,  dict) ), f'argD must be dict. argD is {type(argD)}'
+    
+    # Make a deep copy of the input dict.
+    d = copy.deepcopy(argD)
+
+    # Get the type.
+    typeName = typeD[ d['type'] ]
+
+    # Remove the type string from the input dictionary.
+    d.pop('type')
+
+    # Create the model.
+    return typeName( **d )
 
 def x2y2z_2_z_angle(x2, y2, z):
     '''
@@ -89,6 +117,7 @@ class CameraModel(object):
 
 # The polynomial coefficents.
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
+@register(CAMERA_MODELS)
 class DoubleSphere(CameraModel):
     def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
         super(DoubleSphere, self).__init__(
@@ -209,6 +238,7 @@ class DoubleSphere(CameraModel):
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
 
+@register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
     def __init__(self, cx, cy, lon_shift=0, open_span=True, in_to_tensor=False, out_to_numpy=False):
         super(Equirectangular, self).__init__(
@@ -306,6 +336,7 @@ class Equirectangular(CameraModel):
         return self.out_to_numpy( torch.stack( (p_x, p_y), dim=0 ) ), \
                self.out_to_numpy( torch.ones_like(p_x).to(torch.bool) )
 
+@register(CAMERA_MODELS)
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
     

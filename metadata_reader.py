@@ -3,6 +3,32 @@ import os, sys
 from os.path import join
 import numpy as np
 
+class ShapeStruct(object):
+    def __init__(self, H, W):
+        super().__init__()
+        
+        self.H = H
+        self.W = W
+        
+    @property
+    def shape(self):
+        '''
+        This funtion is meant to be used with NumPy, PyTorch, etc.
+        '''
+        return (self.H, self.W)
+    
+    @property
+    def size(self):
+        '''
+        This function is meant to be used with OpenCV APIs.
+        '''
+        return (self.W, self.H)
+
+def read_shape_struct(dict_like):
+    '''
+    Read shape information from a dict-like object.
+    '''
+    return ShapeStruct( H=dict_like['H'], W=dict_like['W'] )
 class MetadataReader():
 
     def __init__(self, data_dir):
@@ -37,7 +63,7 @@ class MetadataReader():
             self.rigpath = join(self.data_dir, "rig")
             if create_dirs:
                 if not os.path.exists(self.rigpath):
-                    os.mkdir(self.rigpath)
+                    os.makedirs(self.rigpath)
 
             rigdata = dict(
                 path=self.rigpath,
@@ -60,7 +86,7 @@ class MetadataReader():
                 cam_headers.append(cpath)
                 if create_dirs:
                     if not os.path.exists(cpath):
-                        os.mkdir(cpath)
+                        os.makedirs(cpath)
 
                 #Also create a camera data struct that holds all important data for data collection
                 cdata = dict(
