@@ -3,6 +3,7 @@ import os, sys
 from os.path import join
 import numpy as np
 
+from .frame_io import read_frame_graph
 class ShapeStruct(object):
     def __init__(self, H, W):
         super().__init__()
@@ -33,6 +34,7 @@ class MetadataReader():
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
+        self.frame_graph = None
     
     def read_metadata_and_initialize_dirs(self, args, create_dirs=True):
         '''
@@ -41,6 +43,11 @@ class MetadataReader():
         
         creawte_dirs: If True, creates the associated directory structure. 
         '''
+        
+        # Read the frame graph first.
+        self.frame_graph = read_frame_graph(args.frame_graph_path)
+        print('Frame graph read successfully. ')
+        
         with open(args.metadata_path) as metadata_file:
 
             #Load Metadata JSON and set the number of cameras
@@ -50,7 +57,7 @@ class MetadataReader():
             #Initialize indexing lists  
             self.cam_paths_list = []
             self.rig_paths_list = []
-            self.cam_to_poses_list = dict()
+            self.cam_to_poses_dict = dict()
 
             #Print the number of found cameras
             print(f"Number of cameras found... {self.numcams}!")
@@ -68,7 +75,8 @@ class MetadataReader():
             rigdata = dict(
                 path=self.rigpath,
                 types=self.metadata["rig_img_types"],
-                is_rig=True
+                is_rig=True,
+                data=dict(frame="rbf")
             )
 
             #Initialize camera headers and the rig_is_cam flag. The rig_is_cam flag is used if 
@@ -95,10 +103,17 @@ class MetadataReader():
                     data=c
                 )
 
+                # Get the pose of the camera by querying the frame graph.
+                frame_name = c["frame"]
+                T_rig_cam = self.frame_graph.query_transform(f0="rbf", f1=frame_name) # FTensor
+                cam_position = T_rig_cam.translation.cpu().numpy()
+                # cam_orientation = T_rig_cam.rotation.cpu().numpy()
+
                 #If a camera is the first to have an origin position at the rig frame, set the rig_is_cam
                 #flag to be true. Also include the rigdata in the list of data associated with the camera number.
                 #If it is not the first camera, warn the user. Otherwise, add the camera data to the index.
-                if np.array_equal(np.array(c["pos"]),np.array([0.0,0.0,0.0])):
+                # if np.array_equal(np.array(c["pos"]),np.array([0.0,0.0,0.0])):
+                if np.array_equal(cam_position,np.array([0.0,0.0,0.0])):
                     if self.rig_is_cam:
                         print(f"Camera {i} also is positioned at the origin (Numbering starts at 0). \
                               Since a previous camera was also positioned at the rig frame, this camera will \
@@ -120,7 +135,7 @@ class MetadataReader():
                     i:cdata
                 })
 
-                self.cam_to_poses_list.update({
+                self.cam_to_poses_dict.update({
                     i:list()
                 })
 
@@ -132,7 +147,7 @@ class MetadataReader():
                     "rig":rigdata
                 })
 
-                self.cam_to_poses_list.update({
+                self.cam_to_poses_dict.update({
                     "rig":list()
                 })
 
