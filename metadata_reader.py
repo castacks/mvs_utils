@@ -12,19 +12,19 @@ class MetadataReader():
         self.data_dir = data_dir
         self.frame_graph = None
     
-    def read_metadata_and_initialize_dirs(self, args, create_dirs=True):
+    def read_metadata_and_initialize_dirs(self, metadata_path, frame_graph_path, create_dirs=True):
         '''
         Reads in the specified metadata file, which sets important variables such as number of cameras and their extrinsics.
-        Also sets up the directory structure according to input args and the specified metadata.
+        Also sets up the directory structure according to the specified metadata.
         
         creawte_dirs: If True, creates the associated directory structure. 
         '''
         
         # Read the frame graph first.
-        self.frame_graph = read_frame_graph(args.frame_graph_path)
+        self.frame_graph = read_frame_graph(frame_graph_path)
         print('Frame graph read successfully. ')
         
-        with open(args.metadata_path) as metadata_file:
+        with open(metadata_path) as metadata_file:
 
             #Load Metadata JSON and set the number of cameras
             self.metadata = json.load(metadata_file)
