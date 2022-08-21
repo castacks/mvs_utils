@@ -1,4 +1,6 @@
 
+import numpy as np
+
 class ShapeStruct(object):
     def __init__(self, H, W):
         super().__init__()
@@ -19,6 +21,10 @@ class ShapeStruct(object):
         This function is meant to be used with OpenCV APIs.
         '''
         return (self.W, self.H)
+    
+    @property
+    def shape_numpy(self):
+        return np.array( [ self.H, self.W ], dtype=np.int32 )
     
     @staticmethod
     def read_shape_struct(dict_like):

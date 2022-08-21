@@ -5,6 +5,8 @@ import torch
 import math
 import sys
 
+from .shape_struct import ShapeStruct
+
 CAMERA_MODELS = dict()
 
 LOCAL_PI = math.pi
@@ -60,7 +62,7 @@ def xyz_2_z_angle(x, y, z):
 
 
 class CameraModel(object):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         super(CameraModel, self).__init__()
 
         self.name = name
@@ -71,9 +73,20 @@ class CameraModel(object):
         self.fov_degree = fov_degree 
         self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
         
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
         self.device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
+
+    @property
+    def shape(self):
+        return self.ss.shape
 
     def in_wrap(self, x):
         if self.in_to_tensor:
@@ -124,9 +137,9 @@ class CameraModel(object):
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
 class DoubleSphere(CameraModel):
-    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         super(DoubleSphere, self).__init__(
-            'double_sphere', fx, fy, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'double_sphere', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.alpha = alpha
         self.xi = xi
@@ -262,9 +275,9 @@ class DoubleSphere(CameraModel):
 
 @register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
-    def __init__(self, cx, cy, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
         super(Equirectangular, self).__init__(
-            'equirectangular', 1, 1, cx, cy, 360, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'equirectangular', 1, 1, cx, cy, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.lon_shift = lon_shift
         self.longitude_span = torch.Tensor( [ -LOCAL_PI,   LOCAL_PI ]  ).to(dtype=torch.float32) + self.lon_shift
@@ -374,7 +387,7 @@ class Equirectangular(CameraModel):
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
     
-    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         '''
         The implementation is mostly based on 
         https://github.com/hyu-cvlab/omnimvs-pytorch/blob/3016a5c01f55c27eff3c019be9aee02e34aaaade/utils/ocam.py#L15
@@ -395,7 +408,7 @@ class Ocam(CameraModel):
         https://sites.google.com/site/scarabotix/ocamcalib-omnidirectional-camera-calibration-toolbox-for-matlab
         '''
         
-        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
         
         # Polynomial coefficients starting from the highest degree.
         self.poly_coeff     = torch.as_tensor(poly_coeff).to(dtype=torch.float32)     # Only contains the coefficients.
