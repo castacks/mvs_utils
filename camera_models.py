@@ -114,10 +114,11 @@ class CameraModel(object):
         '''
         raise NotImplementedError()
 
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
         
         NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
         batch number.
@@ -225,10 +226,11 @@ class DoubleSphere(CameraModel):
 
         return self.out_wrap(ray), self.out_wrap(valid_mask)
 
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
         
         NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
         batch number. 
@@ -254,6 +256,9 @@ class DoubleSphere(CameraModel):
         t = self.alpha * d2 + ( 1 - self.alpha ) * ( self.xi * d1 + z )
         px = self.fx / t * x + self.cx
         py = self.fy / t * y + self.cy
+        if normalized:
+            px = px / ( self.ss.W - 1 ) * 2 - 1
+            py = py / ( self.ss.H - 1 ) * 2 - 1
 
         # pixel_coor = torch.stack( (px, py), dim=0 )
         pixel_coor = torch.cat( (px, py), dim=-2 )
@@ -352,10 +357,11 @@ class Equirectangular(CameraModel):
         return self.out_wrap( torch.cat( (x, y, z), dim=-2 )   ), \
                self.out_wrap( torch.ones_like(x.squeeze(-2)).to(torch.bool) )
     
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
         
         NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
         batch number. 
@@ -374,11 +380,15 @@ class Equirectangular(CameraModel):
         z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
         lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
         
-        p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
-        p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
-        
-        p_y = p_y * ( 2 * self.cy )
-        p_x = p_x * ( 2 * self.cx )
+        if normalized:
+            p_y = lat / LOCAL_PI * 2
+            p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel * 2 - 1
+        else:
+            p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
+            p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
+            
+            p_y = p_y * ( 2 * self.cy )
+            p_x = p_x * ( 2 * self.cx )
         
         return self.out_to_numpy( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_to_numpy( torch.ones_like(p_x).to(torch.bool) )
@@ -495,10 +505,11 @@ class Ocam(CameraModel):
         return self.out_wrap( out ), \
                self.out_wrap( valid_mask )
         
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
         
         NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
         batch number. 
@@ -532,6 +543,10 @@ class Ocam(CameraModel):
         y2 = x * e + y     + self.cx
         
         # Convert back to our coordinate system.
+        if normalized:
+            y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
+            x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
+        
         out = torch.stack( (y2, x2), dim=-2 )
         
         return self.out_to_numpy( out ), \
