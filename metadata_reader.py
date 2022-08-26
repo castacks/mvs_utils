@@ -43,13 +43,15 @@ class MetadataReader():
             self.cam_to_camdata = dict()
 
             #Make a rig directory and initialize the rigdata struct.
-            self.rigpath = join(self.data_dir, "rig")
+            # self.rigpath = join(self.data_dir, "rig")
+            self.rigpath = "rig"
+            rig_out_dir = join(self.data_dir, "rig")
             if create_dirs:
-                if not os.path.exists(self.rigpath):
-                    os.makedirs(self.rigpath)
+                if not os.path.exists(rig_out_dir):
+                    os.makedirs(rig_out_dir)
 
             rigdata = dict(
-                path=self.rigpath,
+                path=rig_out_dir,
                 types=self.metadata["rig_img_types"],
                 is_rig=True,
                 data=dict(frame="rbf")
@@ -66,8 +68,9 @@ class MetadataReader():
             for i, c in enumerate(self.metadata['cams']):
                 
                 #For each camera, create a directory and index that directory in the csv index.
-                cpath = join(self.data_dir, f"cam{i}")
-                cam_headers.append(cpath)
+                c_str = f"cam{i}"
+                cpath = join(self.data_dir, c_str)
+                cam_headers.append(c_str)
                 if create_dirs:
                     if not os.path.exists(cpath):
                         os.makedirs(cpath)
@@ -105,7 +108,8 @@ class MetadataReader():
                             i:cdata
                         })
 
-                        self.rigpath = cdata["path"]
+                        # self.rigpath = cdata["path"]
+                        self.rigpath = c_str
                     
                 self.cam_to_camdata.update({
                     i:cdata
