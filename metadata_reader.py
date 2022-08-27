@@ -81,8 +81,11 @@ class MetadataReader():
 
                 # Get the pose of the camera by querying the frame graph.
                 frame_name = c["frame"]
-                T_rig_cam = self.frame_graph.query_transform(f0="rbf", f1=frame_name) # FTensor
+                T_rig_cam = self.frame_graph.query_transform(f0="rbf", f1=frame_name) # FTensor0
                 cam_position = T_rig_cam.translation.cpu().numpy()
+
+                print("METADATAREADER-----")
+                print(frame_name, cam_position)
                 # cam_orientation = T_rig_cam.rotation.cpu().numpy()
 
                 #If a camera is the first to have an origin position at the rig frame, set the rig_is_cam

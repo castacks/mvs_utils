@@ -29,7 +29,6 @@ def parse_orientation( orientation_dict ):
     "type": "quaternion:,
     "data": {"x": x, "y": y, "z": z, "w": w}
     '''
-    
     t = orientation_dict['type']
     if t == 'rotation_matrix':
         return rot_mat_from_1d_array( orientation_dict['data'] )
