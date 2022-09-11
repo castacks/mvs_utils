@@ -282,7 +282,8 @@ class DoubleSphere(CameraModel):
 class Equirectangular(CameraModel):
     def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
         '''
-        Used primarily for generating a panorama image from six pinhole images.
+        Used primarily for generating a panorama image from six pinhole images or ratating a
+        panorama image for training.
         
         Since it is a camera model, the frame of the image is similar to other camera models.
         The z-axis is the optical axis and pointing forward. The x-axis is to the right. The 
