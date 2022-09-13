@@ -89,13 +89,13 @@ class CameraModel(object):
         return self.ss.shape
 
     def in_wrap(self, x):
-        if self.in_to_tensor:
+        if self.in_to_tensor and not isinstance(x, torch.Tensor):
             return torch.as_tensor(x).to(device=self.device)
         else:
             return x
 
     def out_wrap(self, x):
-        if self.out_to_numpy:
+        if self.out_to_numpy and isinstance(x, torch.Tensor):
             return x.cpu().numpy()
         else:
             return x
