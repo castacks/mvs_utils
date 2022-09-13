@@ -1,6 +1,6 @@
 
 import copy
-from numpy import poly
+# from numpy import poly
 import torch
 import math
 import sys
@@ -280,7 +280,8 @@ class DoubleSphere(CameraModel):
 
 @register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
-    def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
+    # def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, shape_struct, longitude_span=(-LOCAL_PI, LOCAL_PI), latitude_span=(-LOCAL_PI/2, LOCAL_PI/2), open_span=False, in_to_tensor=False, out_to_numpy=False):
         '''
         Used primarily for generating a panorama image from six pinhole images or ratating a
         panorama image for training.
@@ -295,36 +296,49 @@ class Equirectangular(CameraModel):
         When lon_shift is 0, the frame is the same as the normal definition, where z-axis is in the
         forward direction and the middle of the image is the zero longitude angle.
         '''
+
+        # Full longitude span is [-pi, pi], with possible shift or crop.
+        # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
+        # The actual longitude span that all the pixels cover.
+        self.lon_span_pixel = longitude_span[1] - longitude_span[0]
+        assert self.lon_span_pixel <= 2 * LOCAL_PI, \
+            f'logintude_span is over 2pi: {longitude_span}, longitude_span[1] - longitude_span[0] = {self.lon_span_pixel}. '
+        
+        # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
+        self.open_span = open_span
+        if self.open_span:
+            # TODO: Potential bug if cx is not at the center of the image.
+            # self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
+            self.lon_span_pixel = ( shape_struct.W - 1 ) / shape_struct.W * self.lon_span_pixel
+        
+        assert latitude_span[0] >= -LOCAL_PI / 2 and latitude_span[1] <= LOCAL_PI / 2, \
+            f'latitude_span is wrong: {latitude_span}. '
+        
+        self.longitude_span = torch.Tensor( [ longitude_span[0], longitude_span[1] ] ).to(dtype=torch.float32)
+        self.latitude_span  = torch.Tensor( [ latitude_span[0],  latitude_span[1]  ] ).to(dtype=torch.float32)
+
+        # Figure out the virtual image center.
+        cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
+        cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * ( shape_struct.H - 1 )
+
         super(Equirectangular, self).__init__(
             'equirectangular', 1, 1, cx, cy, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
-        self.lon_shift = lon_shift
-        self.longitude_span = torch.Tensor( [ -LOCAL_PI,   LOCAL_PI ]  ).to(dtype=torch.float32) + self.lon_shift
-        self.latitude_span  = torch.Tensor( [ -LOCAL_PI/2, LOCAL_PI/2] ).to(dtype=torch.float32)
-        
-        # Since lon_shift is applied by adding to the longitude span, the shifted frame has a measured
-        # rotation of -lon_shift, w.r.t. the original frame. Thus, the shifted frame has a rotation 
-        # that is measured in the original frame as
-        a = -self.lon_shift
-        self.R_ori_shifted = torch.Tensor(
-            [ [ math.cos(a), -math.sin(a) ], 
-              [ math.sin(a),  math.cos(a) ] ]
-            ).to(dtype=torch.float32)
-
-        # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
-        self.open_span = open_span
-        
-        # The actual longitude span that all the pixels cover.
-        self.lon_span_pixel = ( self.longitude_span[1] - self.longitude_span[0] )
-        if self.open_span:
-            self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
+        # # Since lon_shift is applied by adding to the longitude span, the shifted frame has a measured
+        # # rotation of -lon_shift, w.r.t. the original frame. Thus, the shifted frame has a rotation 
+        # # that is measured in the original frame as
+        # a = -self.lon_shift
+        # self.R_ori_shifted = torch.Tensor(
+        #     [ [ math.cos(a), -math.sin(a) ], 
+        #       [ math.sin(a),  math.cos(a) ] ]
+        #     ).to(dtype=torch.float32)
 
     def to_(self, dtype=None, device=None):
         super().to_(dtype, device)
         
         self.longtitude_span = self.longitude_span.to(dtype, device)
         self.latitude_span   = self.latitude_span.to(dtype, device)
-        self.R_ori_shifted   = self.R_ori_shifted.to(dtype, device)
+        # self.R_ori_shifted   = self.R_ori_shifted.to(dtype, device)
 
     def pixel_2_ray(self, pixel_coor):
         '''
@@ -344,8 +358,12 @@ class Equirectangular(CameraModel):
         
         pixel_coor = self.in_wrap(pixel_coor)
         
-        pixel_space_center = \
-            torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+        # pixel_space_center = \
+        #     torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+        
+        pixel_space_shape = \
+            torch.Tensor([ self.ss.W, self.ss.H ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+
         angle_start = \
             torch.Tensor([ self.longitude_span[0], self.latitude_span[0] ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
         
@@ -354,7 +372,9 @@ class Equirectangular(CameraModel):
         ).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
         
         # lon_lat.dtype becomes torch.float64 if pixel_coor.dtype=torch.int.
-        lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
+        # TODO: Potential bug if pixel_space_center is not at the center of image.
+        # lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
+        lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start
         
         # Bx1xN after calling torch.split.
         longitute, latitute = torch.split( lon_lat, 1, dim=-2 )
@@ -397,18 +417,34 @@ class Equirectangular(CameraModel):
         lat = torch.atan2( point_3d[..., 1, :], r )
         
         # Compute longitude.
-        z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
+        # z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
+        z_x = point_3d[ ..., [2, 0], : ]
         lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
         
-        if normalized:
-            p_y = lat / LOCAL_PI * 2
-            p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel * 2 - 1
-        else:
-            p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
-            p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
+        # if normalized:
+        #     # [-1, 1]
+        #     p_y = lat / LOCAL_PI * 2
+        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel * 2 - 1
+        # else:
+        #     p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
+        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
             
-            p_y = p_y * ( 2 * self.cy )
-            p_x = p_x * ( 2 * self.cx )
+        #     # p_y = p_y * ( 2 * self.cy )
+        #     # p_x = p_x * ( 2 * self.cx )
+        #     p_y = p_y * ( self.ss.H - 1 )
+        #     p_x = p_x * ( self.ss.W - 1 )
+
+        latitude_range = self.latitude_span[1] - self.latitude_span[0]
+        p_y = lat / latitude_range # [ 0, 1 ]
+        p_x = lon / self.lon_span_pixel # [ 0, 1 ], closed span
+
+        if normalized:
+            # [-1, 1]
+            p_y = p_y * 2 - 1
+            p_x = p_x * 2 - 1
+        else:
+            p_y = p_y * ( self.ss.H - 1 )
+            p_x = p_x * ( self.ss.W - 1 )
         
         return self.out_to_numpy( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_to_numpy( torch.ones_like(p_x).to(torch.bool) )

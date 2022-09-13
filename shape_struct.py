@@ -32,3 +32,6 @@ class ShapeStruct(object):
         Read shape information from a dict-like object.
         '''
         return ShapeStruct( H=dict_like['H'], W=dict_like['W'] )
+
+    def __repr__(self) -> str:
+        return f'ShapeStruct(H={self.H}, W={self.W})'
