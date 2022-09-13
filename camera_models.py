@@ -297,6 +297,8 @@ class Equirectangular(CameraModel):
         forward direction and the middle of the image is the zero longitude angle.
         '''
 
+        shape_struct = ShapeStruct.read_shape_struct(shape_struct)
+
         # Full longitude span is [-pi, pi], with possible shift or crop.
         # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
         # The actual longitude span that all the pixels cover.
