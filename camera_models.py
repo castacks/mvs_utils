@@ -420,7 +420,7 @@ class Equirectangular(CameraModel):
         
         # Compute longitude.
         # z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
-        z_x = point_3d[ ..., [2, 0], : ]
+        z_x = z_x_in
         lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
         
         # if normalized:
@@ -437,8 +437,8 @@ class Equirectangular(CameraModel):
         #     p_x = p_x * ( self.ss.W - 1 )
 
         latitude_range = self.latitude_span[1] - self.latitude_span[0]
-        p_y = lat / latitude_range # [ 0, 1 ]
-        p_x = lon / self.lon_span_pixel # [ 0, 1 ], closed span
+        p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
+        p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
         if normalized:
             # [-1, 1]
@@ -448,8 +448,8 @@ class Equirectangular(CameraModel):
             p_y = p_y * ( self.ss.H - 1 )
             p_x = p_x * ( self.ss.W - 1 )
         
-        return self.out_to_numpy( torch.stack( (p_x, p_y), dim=-2 ) ), \
-               self.out_to_numpy( torch.ones_like(p_x).to(torch.bool) )
+        return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
+               self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
 
 @register(CAMERA_MODELS)
 class Ocam(CameraModel):
