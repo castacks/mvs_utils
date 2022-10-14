@@ -1,9 +1,11 @@
 
 import copy
-from numpy import poly
+# from numpy import poly
 import torch
 import math
 import sys
+
+from .shape_struct import ShapeStruct
 
 CAMERA_MODELS = dict()
 
@@ -60,7 +62,7 @@ def xyz_2_z_angle(x, y, z):
 
 
 class CameraModel(object):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         super(CameraModel, self).__init__()
 
         self.name = name
@@ -71,18 +73,29 @@ class CameraModel(object):
         self.fov_degree = fov_degree 
         self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
         
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
         self.device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
 
+    @property
+    def shape(self):
+        return self.ss.shape
+
     def in_wrap(self, x):
-        if self.in_to_tensor:
+        if self.in_to_tensor and not isinstance(x, torch.Tensor):
             return torch.as_tensor(x).to(device=self.device)
         else:
             return x
 
     def out_wrap(self, x):
-        if self.out_to_numpy:
+        if self.out_to_numpy and isinstance(x, torch.Tensor):
             return x.cpu().numpy()
         else:
             return x
@@ -92,20 +105,27 @@ class CameraModel(object):
         Arguments:
         pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates. 
         
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number.
+        
         Returns:
-        A 3xN Tensor representing the 3D rays.
-        A (N,) Tensor representing the valid mask.
+        A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         raise NotImplementedError()
 
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number.
         
         Returns: 
-        A 2xN Tensor representing the 2D pixels.
-        A (N,) Tensor representing the valid mask.
+        A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         raise NotImplementedError()
 
@@ -115,17 +135,17 @@ class CameraModel(object):
         
         self.device = device
 
-# The polynomial coefficents.
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
 class DoubleSphere(CameraModel):
-    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         super(DoubleSphere, self).__init__(
-            'double_sphere', fx, fy, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'double_sphere', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.alpha = alpha
         self.xi = xi
 
+        # w1 and w2 are defined in the origial paper.
         w1, w2 = self.get_w1_w2()
         self.w1 = w1
         self.w2 = w2
@@ -133,6 +153,7 @@ class DoubleSphere(CameraModel):
         self.r2_threshold = 1 / ( 2 * self.alpha - 1 )
 
     def get_w1_w2(self):
+        # Refer to the original paper for more information.
         w1 = self.alpha / ( 1 - self.alpha ) \
             if self.alpha <= 0.5 \
             else ( 1 - self.alpha ) / self.alpha
@@ -148,18 +169,21 @@ class DoubleSphere(CameraModel):
     def pixel_2_ray(self, pixel_coor):
         '''
         Arguments:
-        pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates. 
+        pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates.
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number. 
         
         Returns:
-        ray: A 3xN Tensor representing the 3D rays.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         
         pixel_coor = self.in_wrap(pixel_coor)
         
         # mx and my becomes float64 if pixel_coor.dtype is integer type.
-        mx = ( pixel_coor[0, :] - self.cx ) / self.fx
-        my = ( pixel_coor[1, :] - self.cy ) / self.fy
+        mx = ( pixel_coor[..., 0, :] - self.cx ) / self.fx
+        my = ( pixel_coor[..., 1, :] - self.cy ) / self.fy
         r2 = mx**2.0 + my**2.0
 
         if ( self.alpha <= 0.5 ):
@@ -181,10 +205,12 @@ class DoubleSphere(CameraModel):
         y = t * my
         z = t * mz - self.xi
 
-        ray = torch.stack( (x, y, z), dim=0 )
+        # Need to deal with batch dim
+        ray = torch.stack( (x, y, z), dim=-2 )
 
         # Compute the norm of ray along column direction.
-        norm_ray = torch.linalg.norm( ray, ord=2, dim=0, keepdim=True )
+        # norm_ray = torch.linalg.norm( ray, ord=2, dim=0, keepdim=True ) # Non-batched version
+        norm_ray = torch.linalg.norm( ray, ord=2, dim=-2, keepdim=True )
         zero_mask = norm_ray == 0
         norm_ray[zero_mask] = 1
 
@@ -200,77 +226,121 @@ class DoubleSphere(CameraModel):
 
         return self.out_wrap(ray), self.out_wrap(valid_mask)
 
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
         
         Returns: 
-        pixel_coor: A 2xN Tensor representing the 2D pixels.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BXN if batched.
         '''
 
         point_3d = self.in_wrap(point_3d)
 
-        x2 = point_3d[0, :]**2.0 # Note: this promotes x2 to torch.float64 if point_3d.dtype=torch.int. (May not be true for PyTorch.)
-        y2 = point_3d[1, :]**2.0
-        z2 = point_3d[2, :]**2.0
+        # torch.split results in Bx1XN.
+        x, y, z = torch.split( point_3d, 1, dim=-2 )
+
+        x2 = x**2.0 # Note: this may promote x2 to torch.float64 if point_3d.dtype=torch.int. 
+        y2 = y**2.0
+        z2 = z**2.0
 
         d1 = torch.sqrt( x2 + y2 + z2 )
-        d2 = torch.sqrt( x2 + y2 + ( self.xi * d1 + point_3d[2, :] )**2.0 )
+        d2 = torch.sqrt( x2 + y2 + ( self.xi * d1 + z )**2.0 )
 
         # Pixel coordinates. 
-        t = self.alpha * d2 + ( 1 - self.alpha ) * ( self.xi * d1 + point_3d[2, :] )
-        px = self.fx / t * point_3d[0, :] + self.cx
-        py = self.fy / t * point_3d[1, :] + self.cy
+        t = self.alpha * d2 + ( 1 - self.alpha ) * ( self.xi * d1 + z )
+        px = self.fx / t * x + self.cx
+        py = self.fy / t * y + self.cy
+        if normalized:
+            px = px / ( self.ss.W - 1 ) * 2 - 1
+            py = py / ( self.ss.H - 1 ) * 2 - 1
 
-        pixel_coor = torch.stack( (px, py), dim=0 )
+        # pixel_coor = torch.stack( (px, py), dim=0 )
+        pixel_coor = torch.cat( (px, py), dim=-2 )
 
         # Filter the invalid pixels.
-        valid_mask = point_3d[2, :] > -self.w2 * d1
+        valid_mask = z > -self.w2 * d1
 
         # Filter by FOV.
-        a = x2y2z_2_z_angle( x2, y2, point_3d[2, :] )
+        a = x2y2z_2_z_angle( x2, y2, z )
         valid_mask = torch.logical_and(
             valid_mask, 
             a <= self.fov_rad / 2.0
         )
+        
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
 
 @register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
-    def __init__(self, cx, cy, lon_shift=0, open_span=True, in_to_tensor=False, out_to_numpy=False):
-        super(Equirectangular, self).__init__(
-            'equirectangular', 1, 1, cx, cy, 360, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
-
-        self.lon_shift = lon_shift
-        self.longitude_span = torch.Tensor( [ -LOCAL_PI,   LOCAL_PI ]  ).to(dtype=torch.float32) + self.lon_shift
-        self.latitude_span  = torch.Tensor( [ -LOCAL_PI/2, LOCAL_PI/2] ).to(dtype=torch.float32)
+    # def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, shape_struct, longitude_span=(-LOCAL_PI, LOCAL_PI), latitude_span=(-LOCAL_PI/2, LOCAL_PI/2), open_span=False, in_to_tensor=False, out_to_numpy=False):
+        '''
+        Used primarily for generating a panorama image from six pinhole images or ratating a
+        panorama image for training.
         
-        # Since lon_shift is applied by adding to the longitude span, the shifted frame has a measured
-        # rotation of -lon_shift, w.r.t. the original frame. Thus, the shifted frame has a rotation 
-        # that is measured in the original frame as
-        a = -self.lon_shift
-        self.R_ori_shifted = torch.Tensor(
-            [ [ math.cos(a), -math.sin(a) ], 
-              [ math.sin(a),  math.cos(a) ] ]
-            ).to(dtype=torch.float32)
+        Since it is a camera model, the frame of the image is similar to other camera models.
+        The z-axis is the optical axis and pointing forward. The x-axis is to the right. The 
+        y-axis is downwards. The only difference is that to generate a panorama image similar
+        to the ones generated by the Unreal Engine, we need to shift the longitude, normally 
+        by -pi/2 angle. By "shift", we mean addition.
+        
+        NOTE: Currently, this is not the frame attached to the panorama obtained from Unreal Engine.
+        When lon_shift is 0, the frame is the same as the normal definition, where z-axis is in the
+        forward direction and the middle of the image is the zero longitude angle.
+        '''
 
+        shape_struct = ShapeStruct.read_shape_struct(shape_struct)
+
+        # Full longitude span is [-pi, pi], with possible shift or crop.
+        # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
+        # The actual longitude span that all the pixels cover.
+        self.lon_span_pixel = longitude_span[1] - longitude_span[0]
+        assert self.lon_span_pixel <= 2 * LOCAL_PI, \
+            f'logintude_span is over 2pi: {longitude_span}, longitude_span[1] - longitude_span[0] = {self.lon_span_pixel}. '
+        
         # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
         self.open_span = open_span
-        
-        # The actual longitude span that all the pixels cover.
-        self.lon_span_pixel = ( self.longitude_span[1] - self.longitude_span[0] )
         if self.open_span:
-            self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
+            # TODO: Potential bug if cx is not at the center of the image.
+            # self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
+            self.lon_span_pixel = ( shape_struct.W - 1 ) / shape_struct.W * self.lon_span_pixel
+        
+        assert latitude_span[0] >= -LOCAL_PI / 2 and latitude_span[1] <= LOCAL_PI / 2, \
+            f'latitude_span is wrong: {latitude_span}. '
+        
+        self.longitude_span = torch.Tensor( [ longitude_span[0], longitude_span[1] ] ).to(dtype=torch.float32)
+        self.latitude_span  = torch.Tensor( [ latitude_span[0],  latitude_span[1]  ] ).to(dtype=torch.float32)
+
+        # Figure out the virtual image center.
+        cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
+        cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * ( shape_struct.H - 1 )
+
+        super(Equirectangular, self).__init__(
+            'equirectangular', 1, 1, cx, cy, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        # # Since lon_shift is applied by adding to the longitude span, the shifted frame has a measured
+        # # rotation of -lon_shift, w.r.t. the original frame. Thus, the shifted frame has a rotation 
+        # # that is measured in the original frame as
+        # a = -self.lon_shift
+        # self.R_ori_shifted = torch.Tensor(
+        #     [ [ math.cos(a), -math.sin(a) ], 
+        #       [ math.sin(a),  math.cos(a) ] ]
+        #     ).to(dtype=torch.float32)
 
     def to_(self, dtype=None, device=None):
         super().to_(dtype, device)
         
         self.longtitude_span = self.longitude_span.to(dtype, device)
         self.latitude_span   = self.latitude_span.to(dtype, device)
-        self.R_ori_shifted   = self.R_ori_shifted.to(dtype, device)
+        # self.R_ori_shifted   = self.R_ori_shifted.to(dtype, device)
 
     def pixel_2_ray(self, pixel_coor):
         '''
@@ -280,15 +350,22 @@ class Equirectangular(CameraModel):
         Arguments:
         pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates. 
         
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number. 
+        
         Returns:
-        ray: A 3xN Tensor representing the 3D rays.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        ray: A 3xN Tensor representing the 3D rays. Bx3XN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         
         pixel_coor = self.in_wrap(pixel_coor)
         
-        pixel_space_center = \
-            torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+        # pixel_space_center = \
+        #     torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+        
+        pixel_space_shape = \
+            torch.Tensor([ self.ss.W, self.ss.H ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
+
         angle_start = \
             torch.Tensor([ self.longitude_span[0], self.latitude_span[0] ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
         
@@ -297,50 +374,88 @@ class Equirectangular(CameraModel):
         ).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
         
         # lon_lat.dtype becomes torch.float64 if pixel_coor.dtype=torch.int.
-        lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
+        # TODO: Potential bug if pixel_space_center is not at the center of image.
+        # lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
+        lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start
         
-        c = torch.cos(lon_lat[1, :])
+        # Bx1xN after calling torch.split.
+        longitute, latitute = torch.split( lon_lat, 1, dim=-2 )
         
-        x = c * torch.sin(lon_lat[0, :])
-        y =     torch.sin(lon_lat[1, :])
-        z = c * torch.cos(lon_lat[0, :])
+        c = torch.cos(latitute)
         
-        return self.out_wrap( torch.stack( (x, y, z), dim=0 )   ), \
-               self.out_wrap( torch.ones_like(x).to(torch.bool) )
+        x = c * torch.sin(longitute)
+        y =     torch.sin(latitute)
+        z = c * torch.cos(longitute)
+        
+        # return self.out_wrap( torch.stack( (x, y, z), dim=0 )   ), \
+        #        self.out_wrap( torch.ones_like(x).to(torch.bool) )
+               
+        return self.out_wrap( torch.cat( (x, y, z), dim=-2 )   ), \
+               self.out_wrap( torch.ones_like(x.squeeze(-2)).to(torch.bool) )
     
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
         
         Returns: 
-        pixel_coor: A 2xN Tensor representing the 2D pixels.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         
         point_3d = self.in_wrap(point_3d)
         
-        r = torch.linalg.norm(point_3d, dim=0)
+        # Input z and x coordinates.
+        z_x_in = point_3d[ ..., [2, 0], : ]
         
-        lat = torch.asin(point_3d[1, :] / r)
+        # Compute latitude.
+        # r = torch.linalg.norm(point_3d, dim=-2)
+        # lat = torch.asin(point_3d[..., 1, :] / r)
+        r   = torch.linalg.norm( z_x_in, dim=-2 )
+        lat = torch.atan2( point_3d[..., 1, :], r )
         
-        z_x = self.R_ori_shifted @ point_3d[ [2, 0], : ]
-        lon = torch.atan2( z_x[1, :], z_x[0, :] )
+        # Compute longitude.
+        # z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
+        z_x = z_x_in
+        lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
         
-        p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
-        p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
+        # if normalized:
+        #     # [-1, 1]
+        #     p_y = lat / LOCAL_PI * 2
+        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel * 2 - 1
+        # else:
+        #     p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
+        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
+            
+        #     # p_y = p_y * ( 2 * self.cy )
+        #     # p_x = p_x * ( 2 * self.cx )
+        #     p_y = p_y * ( self.ss.H - 1 )
+        #     p_x = p_x * ( self.ss.W - 1 )
+
+        latitude_range = self.latitude_span[1] - self.latitude_span[0]
+        p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
+        p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
+
+        if normalized:
+            # [-1, 1]
+            p_y = p_y * 2 - 1
+            p_x = p_x * 2 - 1
+        else:
+            p_y = p_y * ( self.ss.H - 1 )
+            p_x = p_x * ( self.ss.W - 1 )
         
-        p_y = p_y * ( 2 * self.cy )
-        p_x = p_x * ( 2 * self.cx )
-        
-        return self.out_to_numpy( torch.stack( (p_x, p_y), dim=0 ) ), \
-               self.out_to_numpy( torch.ones_like(p_x).to(torch.bool) )
+        return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
+               self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
 
 @register(CAMERA_MODELS)
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
     
-    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
         '''
         The implementation is mostly based on 
         https://github.com/hyu-cvlab/omnimvs-pytorch/blob/3016a5c01f55c27eff3c019be9aee02e34aaaade/utils/ocam.py#L15
@@ -361,7 +476,7 @@ class Ocam(CameraModel):
         https://sites.google.com/site/scarabotix/ocamcalib-omnidirectional-camera-calibration-toolbox-for-matlab
         '''
         
-        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
         
         # Polynomial coefficients starting from the highest degree.
         self.poly_coeff     = torch.as_tensor(poly_coeff).to(dtype=torch.float32)     # Only contains the coefficients.
@@ -384,18 +499,26 @@ class Ocam(CameraModel):
         
         # Change shapes.
         poly_coeff = poly_coeff.view((-1, 1))
-        x = x.view((1, -1))
         
-        return torch.sum( poly_coeff * x ** p, dim=0 )
+        # Consider the batch dimension.
+        # x = x.view((1, -1))
+        # N -> 1xN, BxN -> Bx1xN
+        x = x.unsqueeze(-2)
+        
+        # return torch.sum( poly_coeff * x ** p, dim=0 )
+        return torch.sum( poly_coeff * x ** p, dim=-2 )
         
     def pixel_2_ray(self, pixel_coor):
         '''
         Arguments:
         pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates. 
         
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number. 
+        
         Returns:
-        ray: A 3xN Tensor representing the 3D rays.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''
 
         pixel_coor = self.in_wrap(pixel_coor).to(dtype=torch.float32)
@@ -403,8 +526,8 @@ class Ocam(CameraModel):
         p = torch.zeros_like(pixel_coor, device=pixel_coor.device)
         
         # We need to use Davide's definition of the coordinate system.
-        p[0, :] = pixel_coor[1, :] - self.cy
-        p[1, :] = pixel_coor[0, :] - self.cx
+        p[..., 0, :] = pixel_coor[..., 1, :] - self.cy
+        p[..., 1, :] = pixel_coor[..., 0, :] - self.cx
         
         c, d, e = self.affine_coeff
         invdet = 1.0 / (c - d * e)
@@ -419,8 +542,8 @@ class Ocam(CameraModel):
 
         p = A_inv @ p
         
-        x = p[0, :]
-        y = p[1, :]
+        x = p[..., 0, :]
+        y = p[..., 1, :]
         
         rho = torch.sqrt( x**2 + y**2 )
 
@@ -431,7 +554,8 @@ class Ocam(CameraModel):
         
         # Convert back to our coordinate system.
         # out   = torch.stack((x, y, -z), dim=0)
-        out   = torch.stack((y, x, -z), dim=0)
+        # out   = torch.stack((y, x, -z), dim=0)
+        out   = torch.stack((y, x, -z), dim=-2)
         
         max_theta = self.fov_rad / 2.0
         valid_mask = theta <= max_theta
@@ -439,20 +563,29 @@ class Ocam(CameraModel):
         return self.out_wrap( out ), \
                self.out_wrap( valid_mask )
         
-    def point_3d_2_pixel(self, point_3d):
+    def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
         point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
         
         Returns: 
-        pixel_coor: A 2xN Tensor representing the 2D pixels.
-        valid_mask: A (N,) Tensor representing the valid mask.
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''   
         
         point_3d = self.in_wrap(point_3d)
         
-        norm  = torch.sqrt( point_3d[0, :]**2 + point_3d[1, :]**2 ) + Ocam.EPS
-        theta = torch.atan2( -point_3d[2, :], norm )
+        # torch.split() will reserve the dimension.
+        x_3d = point_3d[..., 0, :]
+        y_3d = point_3d[..., 1, :]
+        z_3d = point_3d[..., 2, :]
+        
+        norm  = torch.sqrt( x_3d**2 + y_3d**2 ) + Ocam.EPS
+        theta = torch.atan2( -z_3d, norm )
         rho   = Ocam.poly_eval( self.inv_poly_coeff, theta )
         
         # max_theta check : theta is the angle from xy-plane in ocam, 
@@ -462,13 +595,17 @@ class Ocam(CameraModel):
         c, d, e = self.affine_coeff
         
         # We need to use Davide's definition of the coordinate system.
-        y = point_3d[0, :] / norm * rho
-        x = point_3d[1, :] / norm * rho
+        y = x_3d / norm * rho
+        x = y_3d / norm * rho
         x2 = x * c + y * d + self.cy
         y2 = x * e + y     + self.cx
         
         # Convert back to our coordinate system.
-        out = torch.stack( (y2, x2), dim=0 )
+        if normalized:
+            y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
+            x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
+        
+        out = torch.stack( (y2, x2), dim=-2 )
         
         return self.out_to_numpy( out ), \
                self.out_to_numpy( theta <= self.fov_rad / 2.0 )

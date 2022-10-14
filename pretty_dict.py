@@ -181,6 +181,43 @@ class NumPyPrinter(SequencePrinter):
                 s += '{}'.format( str(value.tolist()) )
         return s
 
+class NumPyLineBreakPrinter(SequencePrinter):
+    def __init__(self, shape, have_indent=True):
+        super().__init__(have_indent)
+        
+        self.shape = shape
+        
+    def make_str(self, key, value, indent_level=0):
+        # Reshape the array.
+        value = value.reshape(self.shape)
+        
+        indent = self.indent_str(indent_level)
+        s = ''
+        if ( key is not None ):
+            s += '{}\"{}\": [\n'.format( indent, key )
+        else:
+            if ( self.have_indent ):
+                s += '{}[\n'.format(indent )
+            else:
+                s += '[\n'
+                
+        # Loop for all the rows.
+        indent = self.indent_str(indent_level + 1)
+        for i in range(self.shape[0]):
+            s += '{}'.format(indent)
+            for j in range(self.shape[1]):
+                s += f'{value[i, j]}, '
+            
+            if i == self.shape[0] - 1:
+                s = s[:-2]
+
+            s += '\n'
+            
+        indent = self.indent_str(indent_level)
+        s += f'{indent}]'
+        
+        return s
+
 # class ROSPointPrinter(SequencePrinter):
 #     def __init__(self, have_indent=True):
 #         super(ROSPointPrinter, self).__init__(have_indent)

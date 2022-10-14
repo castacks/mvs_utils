@@ -3,45 +3,28 @@ import os, sys
 from os.path import join
 import numpy as np
 
-class ShapeStruct(object):
-    def __init__(self, H, W):
-        super().__init__()
-        
-        self.H = H
-        self.W = W
-        
-    @property
-    def shape(self):
-        '''
-        This funtion is meant to be used with NumPy, PyTorch, etc.
-        '''
-        return (self.H, self.W)
-    
-    @property
-    def size(self):
-        '''
-        This function is meant to be used with OpenCV APIs.
-        '''
-        return (self.W, self.H)
+from .frame_io import read_frame_graph
+from .shape_struct import ShapeStruct
 
-def read_shape_struct(dict_like):
-    '''
-    Read shape information from a dict-like object.
-    '''
-    return ShapeStruct( H=dict_like['H'], W=dict_like['W'] )
 class MetadataReader():
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
+        self.frame_graph = None
     
-    def read_metadata_and_initialize_dirs(self, args, create_dirs=True):
+    def read_metadata_and_initialize_dirs(self, metadata_path, frame_graph_path, create_dirs=True):
         '''
         Reads in the specified metadata file, which sets important variables such as number of cameras and their extrinsics.
-        Also sets up the directory structure according to input args and the specified metadata.
+        Also sets up the directory structure according to the specified metadata.
         
         creawte_dirs: If True, creates the associated directory structure. 
         '''
-        with open(args.metadata_path) as metadata_file:
+        
+        # Read the frame graph first.
+        self.frame_graph = read_frame_graph(frame_graph_path)
+        print('Frame graph read successfully. ')
+        
+        with open(metadata_path) as metadata_file:
 
             #Load Metadata JSON and set the number of cameras
             self.metadata = json.load(metadata_file)
@@ -50,7 +33,7 @@ class MetadataReader():
             #Initialize indexing lists  
             self.cam_paths_list = []
             self.rig_paths_list = []
-            self.cam_to_poses_list = dict()
+            self.cam_to_poses_dict = dict()
 
             #Print the number of found cameras
             print(f"Number of cameras found... {self.numcams}!")
@@ -60,15 +43,18 @@ class MetadataReader():
             self.cam_to_camdata = dict()
 
             #Make a rig directory and initialize the rigdata struct.
-            self.rigpath = join(self.data_dir, "rig")
+            # self.rigpath = join(self.data_dir, "rig")
+            self.rigpath = "rig"
+            rig_out_dir = join(self.data_dir, "rig")
             if create_dirs:
-                if not os.path.exists(self.rigpath):
-                    os.makedirs(self.rigpath)
+                if not os.path.exists(rig_out_dir):
+                    os.makedirs(rig_out_dir)
 
             rigdata = dict(
-                path=self.rigpath,
+                path=rig_out_dir,
                 types=self.metadata["rig_img_types"],
-                is_rig=True
+                is_rig=True,
+                data=dict(frame="rbf")
             )
 
             #Initialize camera headers and the rig_is_cam flag. The rig_is_cam flag is used if 
@@ -82,8 +68,9 @@ class MetadataReader():
             for i, c in enumerate(self.metadata['cams']):
                 
                 #For each camera, create a directory and index that directory in the csv index.
-                cpath = join(self.data_dir, f"cam{i}")
-                cam_headers.append(cpath)
+                c_str = f"cam{i}"
+                cpath = join(self.data_dir, c_str)
+                cam_headers.append(c_str)
                 if create_dirs:
                     if not os.path.exists(cpath):
                         os.makedirs(cpath)
@@ -95,10 +82,20 @@ class MetadataReader():
                     data=c
                 )
 
+                # Get the pose of the camera by querying the frame graph.
+                frame_name = c["frame"]
+                T_rig_cam = self.frame_graph.query_transform(f0="rbf", f1=frame_name) # FTensor0
+                cam_position = T_rig_cam.translation.cpu().numpy()
+
+                print("METADATAREADER-----")
+                print(frame_name, cam_position)
+                # cam_orientation = T_rig_cam.rotation.cpu().numpy()
+
                 #If a camera is the first to have an origin position at the rig frame, set the rig_is_cam
                 #flag to be true. Also include the rigdata in the list of data associated with the camera number.
                 #If it is not the first camera, warn the user. Otherwise, add the camera data to the index.
-                if np.array_equal(np.array(c["pos"]),np.array([0.0,0.0,0.0])):
+                # if np.array_equal(np.array(c["pos"]),np.array([0.0,0.0,0.0])):
+                if np.array_equal(cam_position,np.array([0.0,0.0,0.0])):
                     if self.rig_is_cam:
                         print(f"Camera {i} also is positioned at the origin (Numbering starts at 0). \
                               Since a previous camera was also positioned at the rig frame, this camera will \
@@ -114,13 +111,14 @@ class MetadataReader():
                             i:cdata
                         })
 
-                        self.rigpath = cdata["path"]
+                        # self.rigpath = cdata["path"]
+                        self.rigpath = c_str
                     
                 self.cam_to_camdata.update({
                     i:cdata
                 })
 
-                self.cam_to_poses_list.update({
+                self.cam_to_poses_dict.update({
                     i:list()
                 })
 
@@ -132,7 +130,7 @@ class MetadataReader():
                     "rig":rigdata
                 })
 
-                self.cam_to_poses_list.update({
+                self.cam_to_poses_dict.update({
                     "rig":list()
                 })
 
