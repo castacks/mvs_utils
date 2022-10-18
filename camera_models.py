@@ -257,12 +257,8 @@ class DoubleSphere(CameraModel):
         px = self.fx / t * x + self.cx
         py = self.fy / t * y + self.cy
         if normalized:
-            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
-            # px = px / ( self.ss.W - 1 ) * 2 - 1
-            # py = py / ( self.ss.H - 1 ) * 2 - 1
-            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
-            px = px / self.ss.W * 2 - 1
-            py = py / self.ss.H * 2 - 1
+            px = px / ( self.ss.W - 1 ) * 2 - 1
+            py = py / ( self.ss.H - 1 ) * 2 - 1
 
         # pixel_coor = torch.stack( (px, py), dim=0 )
         pixel_coor = torch.cat( (px, py), dim=-2 )
@@ -324,12 +320,8 @@ class Equirectangular(CameraModel):
         self.latitude_span  = torch.Tensor( [ latitude_span[0],  latitude_span[1]  ] ).to(dtype=torch.float32)
 
         # Figure out the virtual image center.
-        # # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
-        # cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
-        # cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * ( shape_struct.H - 1 )
-        # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
-        cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * shape_struct.W
-        cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * shape_struct.H
+        cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
+        cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * ( shape_struct.H - 1 )
 
         super(Equirectangular, self).__init__(
             'equirectangular', 1, 1, cx, cy, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
@@ -384,10 +376,7 @@ class Equirectangular(CameraModel):
         # lon_lat.dtype becomes torch.float64 if pixel_coor.dtype=torch.int.
         # TODO: Potential bug if pixel_space_center is not at the center of image.
         # lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
-        # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
-        # lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start
-        # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
-        lon_lat = pixel_coor / pixel_space_shape * angle_span + angle_start
+        lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start
         
         # Bx1xN after calling torch.split.
         longitute, latitute = torch.split( lon_lat, 1, dim=-2 )
@@ -456,12 +445,8 @@ class Equirectangular(CameraModel):
             p_y = p_y * 2 - 1
             p_x = p_x * 2 - 1
         else:
-            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
-            # p_y = p_y * ( self.ss.H - 1 )
-            # p_x = p_x * ( self.ss.W - 1 )
-            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
-            p_y = p_y * self.ss.H
-            p_x = p_x * self.ss.W
+            p_y = p_y * ( self.ss.H - 1 )
+            p_x = p_x * ( self.ss.W - 1 )
         
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
@@ -617,12 +602,8 @@ class Ocam(CameraModel):
         
         # Convert back to our coordinate system.
         if normalized:
-            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
-            # y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
-            # x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
-            # Using shape is the way for torch.nn.functional.grid_sample() and align_corners=False.
-            y2 = y2 / self.ss.W * 2 - 1
-            x2 = x2 / self.ss.H * 2 - 1
+            y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
+            x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
         
         out = torch.stack( (y2, x2), dim=-2 )
         
