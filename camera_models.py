@@ -134,6 +134,17 @@ class CameraModel(object):
             f'dtype and device cannot both be None. '
         
         self.device = device
+        
+    def __deepcopy__(self, memo):
+        '''
+        https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
+        '''
+        cls = self.__class__ # Extract the class of the object
+        result = cls.__new__(cls) # Create a new instance of the object based on extracted class
+        memo[ id(self) ] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, copy.deepcopy(v, memo)) # Copy over attributes by copying directly or in case of complex objects like lists for exaample calling the `__deepcopy()__` method defined by them. Thus recursively copying the whole tree of objects.
+        return result
 
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
