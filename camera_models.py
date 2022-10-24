@@ -80,7 +80,7 @@ class CameraModel(object):
         else:
             raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
         
-        self.device = None
+        self._device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
 
@@ -90,7 +90,7 @@ class CameraModel(object):
 
     def in_wrap(self, x):
         if self.in_to_tensor and not isinstance(x, torch.Tensor):
-            return torch.as_tensor(x).to(device=self.device)
+            return torch.as_tensor(x).to(device=self._device)
         else:
             return x
 
@@ -128,13 +128,15 @@ class CameraModel(object):
         A (N,) Tensor representing the valid mask. BxN if batched.
         '''
         raise NotImplementedError()
+    
+    @property
+    def device(self):
+        return self._device
 
-    def to_(self, dtype=None, device=None):
-        assert dtype is not None and device is not None, \
-            f'dtype and device cannot both be None. '
-        
-        self.device = device
-        
+    @device.setter
+    def device(self, d):
+        self._device = d
+
     def __deepcopy__(self, memo):
         '''
         https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
@@ -173,8 +175,9 @@ class DoubleSphere(CameraModel):
 
         return w1, w2
 
-    def to_(self, dtype=None, device=None):
-        super().to_(dtype, device)
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
         # Do nothing.
 
     def pixel_2_ray(self, pixel_coor):
@@ -354,11 +357,12 @@ class Equirectangular(CameraModel):
         #       [ math.sin(a),  math.cos(a) ] ]
         #     ).to(dtype=torch.float32)
 
-    def to_(self, dtype=None, device=None):
-        super().to_(dtype, device)
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
         
-        self.longtitude_span = self.longitude_span.to(dtype, device)
-        self.latitude_span   = self.latitude_span.to(dtype, device)
+        self.longtitude_span = self.longitude_span.to(device=d)
+        self.latitude_span   = self.latitude_span.to(device=d)
         # self.R_ori_shifted   = self.R_ori_shifted.to(dtype, device)
 
     def pixel_2_ray(self, pixel_coor):
@@ -509,11 +513,12 @@ class Ocam(CameraModel):
         self.inv_poly_coeff = torch.as_tensor(inv_poly_coeff).to(dtype=torch.float32) # Only contains the coefficients.
         self.affine_coeff   = affine_coeff   # c, d, e
         
-    def to_(self, dtype=None, device=None):
-        super().to_(dtype, device)
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
     
-        self.poly_coeff     = self.poly_coeff.to(dtype, device)
-        self.inv_poly_coeff = self.inv_poly_coeff.to(dtype, device)
+        self.poly_coeff     = self.poly_coeff.to(device=d)
+        self.inv_poly_coeff = self.inv_poly_coeff.to(device=d)
     
     @staticmethod
     def poly_eval(poly_coeff, x):
