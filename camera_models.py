@@ -2,6 +2,7 @@
 import copy
 # from numpy import poly
 import torch
+import torch.nn.functional as F
 import math
 import sys
 
@@ -645,3 +646,112 @@ class Ocam(CameraModel):
         return self.out_to_numpy( out ), \
                self.out_to_numpy( theta <= self.fov_rad / 2.0 )
     
+
+
+
+class Pinhole(CameraModel):
+    def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        
+        # Compute the focal length from the specified parameters.
+        self.fov_rad = 2 * math.atan2(shape_struct.shape[0], 2 * fx)
+        fov_degree = self.fov_rad * 180.0 / LOCAL_PI
+        
+        super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        # FoV for both longitude (x) and latitude (y).
+        self.fov_degree_longitude = 2 * math.atan2(shape_struct.shape[0], 2 * fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(shape_struct.shape[1], 2 * fy) * 180.0 / LOCAL_PI
+        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
+
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
+        self.device = None
+        self.in_to_tensor = in_to_tensor
+        self.out_to_numpy = out_to_numpy
+
+    @property
+    def shape(self):
+        return self.ss.shape
+
+    def in_wrap(self, x):
+        if self.in_to_tensor and not isinstance(x, torch.Tensor):
+            return torch.as_tensor(x).to(device=self.device)
+        else:
+            return x
+
+    def out_wrap(self, x):
+        if self.out_to_numpy and isinstance(x, torch.Tensor):
+            return x.cpu().numpy()
+        else:
+            return x
+
+    def pixel_2_ray(self, uv):
+        '''
+        Arguments:
+        uv (Tensor): A 2xN Tensor contains the pixel coordinates. 
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch size.
+        
+        Returns:
+        A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+        
+        # Convert to honmogeneous coordinates.
+        uv1 = F.pad(uv, (0,0,0, 1), value=1)
+        # Convert to camera-frame (metric).
+        inv_intrinsics = torch.tensor([[self.fy, 0      , -self.cx / self.fx],
+                                      [ 0,      self.fx, -self.cy / self.fy],
+                                      [ 0,      0      ,                1.0]]).to(dtype=uv.dtype, device=uv.device)
+
+        xyz = inv_intrinsics @ uv1
+
+        # Normalize rays to be unit length.
+        xyz = xyz / torch.linalg.norm(xyz, dim = -2, keepdims= True)
+
+        # Mask points that are out of field of view.
+        # NOTE(yoraish): why should there be any??
+
+        return xyz
+        
+
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number.
+        
+        Returns: 
+        A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        raise NotImplementedError()
+
+    def to_(self, dtype=None, device=None):
+        assert dtype is not None and device is not None, \
+            f'dtype and device cannot both be None. '
+        
+        self.device = device
+        
+    def __deepcopy__(self, memo):
+        '''
+        https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
+        '''
+        cls = self.__class__ # Extract the class of the object
+        result = cls.__new__(cls) # Create a new instance of the object based on extracted class
+        memo[ id(self) ] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, copy.deepcopy(v, memo)) # Copy over attributes by copying directly or in case of complex objects like lists for exaample calling the `__deepcopy()__` method defined by them. Thus recursively copying the whole tree of objects.
+        return result
