@@ -6,11 +6,28 @@ import numpy as np
 from .frame_io import read_frame_graph
 from .shape_struct import ShapeStruct
 
-class MetadataReader():
+class MetadataReader(object):
 
     def __init__(self, data_dir):
+        super().__init__()
+
         self.data_dir = data_dir
         self.frame_graph = None
+
+        # Member variables that will be assigned later.
+        self.metadata = None
+
+        self.num_cams = None
+        self.cam_paths_list = None
+        self.cam_to_poses_dict = None
+        self.cam_to_camdata = None
+
+        self.rig_is_cam = None
+        self.rig_path = None
+        self.rig_paths_list = None
+
+        self.init_cam_list = None
+        self.init_imgtype_list = None
     
     def read_metadata_and_initialize_dirs(self, metadata_path, frame_graph_path, create_dirs=True):
         '''
@@ -28,7 +45,7 @@ class MetadataReader():
 
             #Load Metadata JSON and set the number of cameras
             self.metadata = json.load(metadata_file)
-            self.numcams = len(self.metadata['cams'])
+            self.num_cams = len(self.metadata['cams'])
 
             #Initialize indexing lists  
             self.cam_paths_list = []
@@ -36,15 +53,15 @@ class MetadataReader():
             self.cam_to_poses_dict = dict()
 
             #Print the number of found cameras
-            print(f"Number of cameras found... {self.numcams}!")
+            print(f"Number of cameras found... {self.num_cams}!")
 
             #Initialize the camera name/id to camera data dictionary. 
             #This is used during data collection to streamline the data collection procedures.
             self.cam_to_camdata = dict()
 
             #Make a rig directory and initialize the rigdata struct.
-            # self.rigpath = join(self.data_dir, "rig")
-            self.rigpath = "rig"
+            # self.rig_path = join(self.data_dir, "rig")
+            self.rig_path = "rig"
             rig_out_dir = join(self.data_dir, "rig")
             if create_dirs:
                 if not os.path.exists(rig_out_dir):
@@ -111,8 +128,8 @@ class MetadataReader():
                             i:cdata
                         })
 
-                        # self.rigpath = cdata["path"]
-                        self.rigpath = c_str
+                        # self.rig_path = cdata["path"]
+                        self.rig_path = c_str
                     
                 self.cam_to_camdata.update({
                     i:cdata
@@ -134,7 +151,7 @@ class MetadataReader():
                     "rig":list()
                 })
 
-                cam_headers.append(self.rigpath)
+                cam_headers.append(self.rig_path)
 
             #Place the headers at the top of the csv index
             self.cam_paths_list.append(cam_headers)
