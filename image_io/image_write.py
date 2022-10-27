@@ -132,6 +132,6 @@ def write_compressed_float(fn, img):
     
     test_directory_by_filename(fn)
 
-    print(f'img.ndim = {img.ndim}. img.dtype = {img.dtype}. Write compressed float to {fn}. ')
+    # print(f'img.ndim = {img.ndim}. img.dtype = {img.dtype}. Write compressed float to {fn}. ')
     # dummy = np.expand_dims( img, 2 )
     cv2.imwrite( fn, img )
