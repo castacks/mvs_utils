@@ -720,8 +720,11 @@ class Pinhole(CameraModel):
 
         # Mask points that are out of field of view.
         # NOTE(yoraish): why should there be any??
-
-        return xyz
+        if len(uv.shape) == 2:
+            mask = torch.ones(uv.shape[1])
+        if len(uv.shape) == 3:
+            mask = torch.ones((uv.shape[0], uv.shape[2]))
+        return xyz, mask
         
 
     def point_3d_2_pixel(self, point_3d, normalized=False):
@@ -737,7 +740,42 @@ class Pinhole(CameraModel):
         A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
         A (N,) Tensor representing the valid mask. BxN if batched.
         '''
-        raise NotImplementedError()
+
+        point_3d = self.in_wrap(point_3d)
+
+        # Projection matrix.
+        intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
+                                   [ 0,      self.fy, self.cy ],
+                                   [ 0,      0      ,      1.0]]).to(dtype= point_3d.dtype, device= point_3d.device)
+
+        # Pixel coordinates. 
+        uv_unnormalized = intrinsics @ point_3d
+        uv = torch.div(uv_unnormalized, uv_unnormalized[..., -1:, :])
+
+        # Do torch.split results in Bx1XN.
+        px, py, _ = torch.split( uv, 1, dim=-2 )
+
+        if normalized:
+            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
+            # px = px / ( self.ss.W - 1 ) * 2 - 1
+            # py = py / ( self.ss.H - 1 ) * 2 - 1
+            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
+
+        # pixel_coor = torch.stack( (px, py), dim=0 )
+        pixel_coor = torch.cat( (px, py), dim=-2 )
+
+        # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
+        valid_mask_px = torch.logical_and(px < self.ss.shape[0], px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.shape[1], py > 0)
+        valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
+
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+
 
     def to_(self, dtype=None, device=None):
         assert dtype is not None and device is not None, \
