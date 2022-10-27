@@ -5,6 +5,7 @@ import os
 
 # CommonPython package.
 from ..file_sys import get_filename_parts, test_directory_by_filename
+from .float_type import float_as_c4_uint8
 
 def write_image(fn, img):
     test_directory_by_filename(fn)
@@ -125,18 +126,12 @@ def write_float_image_plt(fn, img):
 
 def write_float_image_plt_clip(fn, img, m0, m1):
     write_float_image_plt( fn, np.clip( img, m0, m1 ) )
-    
-def write_compressed_float(fn, img, typeStr='<u1'):
-    if img.ndim == 2:
-        img = np.expand_dims(img, axis=-1)
-    if img.ndim == 3 and img.shape[2] != 1:
-        raise Exception(f'img.shape = {img.shape}. Expecting image.shape[2] == 1. ')
-    
-    # Check if the input array is contiguous.
-    if ( not img.flags['C_CONTIGUOUS'] ):
-        img = np.ascontiguousarray(img)
+
+def write_compressed_float(fn, img):
+    img = float_as_c4_uint8(img)
     
     test_directory_by_filename(fn)
 
+    print(f'img.ndim = {img.ndim}. img.dtype = {img.dtype}. Write compressed float to {fn}. ')
     # dummy = np.expand_dims( img, 2 )
-    cv2.imwrite( fn, img.view(typeStr) )
+    cv2.imwrite( fn, img )
