@@ -271,8 +271,11 @@ class DoubleSphere(CameraModel):
         px = self.fx / t * x + self.cx
         py = self.fy / t * y + self.cy
         if normalized:
-            px = px / ( self.ss.W - 1 ) * 2 - 1
-            py = py / ( self.ss.H - 1 ) * 2 - 1
+            # px = px / ( self.ss.W - 1 ) * 2 - 1
+            # py = py / ( self.ss.H - 1 ) * 2 - 1
+            # After changing to the new pixel coordinate definition.
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
 
         # pixel_coor = torch.stack( (px, py), dim=0 )
         pixel_coor = torch.cat( (px, py), dim=-2 )
@@ -391,7 +394,8 @@ class Equirectangular(CameraModel):
         # lon_lat.dtype becomes torch.float64 if pixel_coor.dtype=torch.int.
         # TODO: Potential bug if pixel_space_center is not at the center of image.
         # lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
-        lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start
+        # lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start # This is before changing the pixel coordinate definiton.
+        lon_lat = pixel_coor / pixel_space_shape * angle_span + angle_start
         
         # Bx1xN after calling torch.split.
         longitute, latitute = torch.split( lon_lat, 1, dim=-2 )
@@ -438,19 +442,6 @@ class Equirectangular(CameraModel):
         z_x = z_x_in
         lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
         
-        # if normalized:
-        #     # [-1, 1]
-        #     p_y = lat / LOCAL_PI * 2
-        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel * 2 - 1
-        # else:
-        #     p_y = lat / LOCAL_PI + 0.5 # [ 0, 1 ]
-        #     p_x = ( lon + LOCAL_PI ) / self.lon_span_pixel # [ 0, 1 ], closed span
-            
-        #     # p_y = p_y * ( 2 * self.cy )
-        #     # p_x = p_x * ( 2 * self.cx )
-        #     p_y = p_y * ( self.ss.H - 1 )
-        #     p_x = p_x * ( self.ss.W - 1 )
-
         latitude_range = self.latitude_span[1] - self.latitude_span[0]
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
@@ -460,8 +451,11 @@ class Equirectangular(CameraModel):
             p_y = p_y * 2 - 1
             p_x = p_x * 2 - 1
         else:
-            p_y = p_y * ( self.ss.H - 1 )
-            p_x = p_x * ( self.ss.W - 1 )
+            # p_y = p_y * ( self.ss.H - 1 )
+            # p_x = p_x * ( self.ss.W - 1 )
+            # After changing the pixel coordinate definiton.
+            p_y = p_y * self.ss.H
+            p_x = p_x * self.ss.W
         
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
@@ -618,8 +612,11 @@ class Ocam(CameraModel):
         
         # Convert back to our coordinate system.
         if normalized:
-            y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
-            x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
+            # y2 = y2 / ( self.ss.W - 1 ) * 2 - 1
+            # x2 = x2 / ( self.ss.H - 1 ) * 2 - 1
+            # After changing the pixel coordinate definition.
+            y2 = y2 / self.ss.W * 2 - 1
+            x2 = x2 / self.ss.H * 2 - 1
         
         out = torch.stack( (y2, x2), dim=-2 )
         
