@@ -708,9 +708,10 @@ class Pinhole(CameraModel):
         
         # Convert to honmogeneous coordinates.
         uv1 = F.pad(uv, (0,0,0, 1), value=1)
+
         # Convert to camera-frame (metric).
-        inv_intrinsics = torch.tensor([[self.fy, 0      , -self.cx / self.fx],
-                                      [ 0,      self.fx, -self.cy / self.fy],
+        inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
+                                      [ 0,      1.0/self.fy, -self.cy / self.fy],
                                       [ 0,      0      ,                1.0]]).to(dtype=uv.dtype, device=uv.device)
 
         xyz = inv_intrinsics @ uv1
