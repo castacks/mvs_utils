@@ -83,6 +83,8 @@ class CameraModel(object):
         self._device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
+        
+        self.padding_mode_if_being_sampled = 'zeros'
 
     @property
     def shape(self):
@@ -351,6 +353,9 @@ class Equirectangular(CameraModel):
         #     [ [ math.cos(a), -math.sin(a) ], 
         #       [ math.sin(a),  math.cos(a) ] ]
         #     ).to(dtype=torch.float32)
+        
+        # Override parent's variable.
+        self.padding_mode_if_being_sampled = 'border'
 
     @CameraModel.device.setter
     def device(self, d):
