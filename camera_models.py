@@ -13,7 +13,7 @@ CAMERA_MODELS = dict()
 LOCAL_PI = math.pi
 
 def register(dst):
-    '''Register a class to a dstination dictionary. '''
+    '''Register a class to a destination dictionary. '''
     def dec_register(cls):
         dst[cls.__name__] = cls
         return cls
@@ -649,18 +649,20 @@ class Ocam(CameraModel):
 
 
 
+@register(CAMERA_MODELS)
 class Pinhole(CameraModel):
     def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
         
-        # Compute the focal length from the specified parameters.
-        self.fov_rad = 2 * math.atan2(shape_struct.shape[0], 2 * fx)
+        # Compute the FoV from the specified parameters.
+        im_h, im_w = shape_struct.shape 
+        self.fov_rad = 2 * math.atan2(im_w, 2 * fx)
         fov_degree = self.fov_rad * 180.0 / LOCAL_PI
         
         super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
-        # FoV for both longitude (x) and latitude (y).
-        self.fov_degree_longitude = 2 * math.atan2(shape_struct.shape[0], 2 * fx) * 180.0 / LOCAL_PI
-        self.fov_degree_latitude  = 2 * math.atan2(shape_struct.shape[1], 2 * fy) * 180.0 / LOCAL_PI
+        # FoV for both longitude (x and width) and latitude (y and height).
+        self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(im_h, 2 * fy) * 180.0 / LOCAL_PI
         print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
 
         if isinstance( shape_struct, dict ):
@@ -670,25 +672,32 @@ class Pinhole(CameraModel):
         else:
             raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
         
-        self.device = None
+        self._device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
+
+        # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
+        self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
+                                   [ 0,      self.fy, self.cy ],
+                                   [ 0,      0      ,      1.0]]).to(dtype=torch.float32, device=self._device)
+
+        self.inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
+                                            [ 0,      1.0/self.fy, -self.cy / self.fy],
+                                            [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
+
+    @property
+    def device(self):
+        return self._device
+
+    @device.setter
+    def device(self, d):
+        self._device = d
+        self.inv_intrinsics.to(device=d)
+        self.intrinsics.to(device=d)
 
     @property
     def shape(self):
         return self.ss.shape
-
-    def in_wrap(self, x):
-        if self.in_to_tensor and not isinstance(x, torch.Tensor):
-            return torch.as_tensor(x).to(device=self.device)
-        else:
-            return x
-
-    def out_wrap(self, x):
-        if self.out_to_numpy and isinstance(x, torch.Tensor):
-            return x.cpu().numpy()
-        else:
-            return x
 
     def pixel_2_ray(self, uv):
         '''
@@ -710,16 +719,15 @@ class Pinhole(CameraModel):
         uv1 = F.pad(uv, (0,0,0, 1), value=1)
 
         # Convert to camera-frame (metric).
-        inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
-                                      [ 0,      1.0/self.fy, -self.cy / self.fy],
-                                      [ 0,      0      ,                1.0]]).to(dtype=uv.dtype, device=uv.device)
 
-        xyz = inv_intrinsics @ uv1
+        xyz = self.inv_intrinsics @ uv1
 
         # Normalize rays to be unit length.
         xyz = xyz / torch.linalg.norm(xyz, dim = -2, keepdims= True)
 
         # Mask points that are out of field of view.
+        # Currently returning a mask of only ones as all pixels are assumed to be with valid values, and the projection out of the image frame of all pixels is valid.
+        # The following if-statements match the dimensionality of batched inputs.
         # NOTE(yoraish): why should there be any??
         if len(uv.shape) == 2:
             mask = torch.ones(uv.shape[1])
@@ -741,16 +749,13 @@ class Pinhole(CameraModel):
         A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
         A (N,) Tensor representing the valid mask. BxN if batched.
         '''
-
         point_3d = self.in_wrap(point_3d)
 
-        # Projection matrix.
-        intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
-                                   [ 0,      self.fy, self.cy ],
-                                   [ 0,      0      ,      1.0]]).to(dtype= point_3d.dtype, device= point_3d.device)
+        
+        # Pixel coordinates projected from the world points. 
+        uv_unnormalized = self.intrinsics @ point_3d
 
-        # Pixel coordinates. 
-        uv_unnormalized = intrinsics @ point_3d
+        # Normalize the homogenous coordinate-points such that their z-value is 1. The expression uv_unnormalized[..., -1:, :] keeps the dimension of the tensor, which is required by the division operation since PyTorch has trouble to broadcast the operation. 
         uv = torch.div(uv_unnormalized, uv_unnormalized[..., -1:, :])
 
         # Do torch.split results in Bx1XN.
@@ -768,29 +773,28 @@ class Pinhole(CameraModel):
         pixel_coor = torch.cat( (px, py), dim=-2 )
 
         # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
-        valid_mask_px = torch.logical_and(px < self.ss.shape[0], px > 0)
-        valid_mask_py = torch.logical_and(py < self.ss.shape[1], py > 0)
+        valid_mask_px = torch.logical_and(px < self.ss.H, px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.W, py > 0)
         valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
 
         # This is for the batched dimension.
         valid_mask = valid_mask.squeeze(-2)
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
-
-
-    def to_(self, dtype=None, device=None):
-        assert dtype is not None and device is not None, \
-            f'dtype and device cannot both be None. '
         
-        self.device = device
-        
-    def __deepcopy__(self, memo):
-        '''
-        https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
-        '''
-        cls = self.__class__ # Extract the class of the object
-        result = cls.__new__(cls) # Create a new instance of the object based on extracted class
-        memo[ id(self) ] = result
-        for k, v in self.__dict__.items():
-            setattr(result, k, copy.deepcopy(v, memo)) # Copy over attributes by copying directly or in case of complex objects like lists for exaample calling the `__deepcopy()__` method defined by them. Thus recursively copying the whole tree of objects.
-        return result
+    
+    def __repr__(self) -> str:
+        return f'''An instance of Pinhole CameraModel
+        Height : {self.ss.shape[0]}
+        Width : {self.ss.shape[1]}
+        fx : {self.fx}
+        fy : {self.fy}
+        cx : {self.cx}
+        cy : {self.cy}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        device: {self._device}'''
+
+    def __str__(self) -> str:
+        return f'''Pinhole
+        Shape : {self.ss.shape}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
