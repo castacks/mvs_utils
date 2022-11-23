@@ -102,6 +102,38 @@ class CameraModel(object):
         else:
             return x
 
+    def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False):
+        '''
+        Get the meshgrid of the pixel centers.
+        shift is appllied along the x and y directions.
+        If normalized is True, then the pixel coordinates are normalized to [-1, 1].
+        '''
+        
+        H, W = self.shape
+        
+        x = torch.arange(W, dtype=torch.float32) + shift
+        y = torch.arange(H, dtype=torch.float32) + shift
+        
+        xx, yy = torch.meshgrid(x, y, indexing='xy')
+        
+        if normalized:
+            xx = xx / W * 2 - 1
+            yy = yy / H * 2 - 1
+        
+        if skip_out_wrap:
+            return xx, yy
+        else:
+            return self.out_wrap(xx), self.out_wrap(yy)
+    
+    def pixel_coordinates(self, shift=0.5, normalized=False):
+        '''
+        Get the pixel coordinates.
+        shift is appllied along the x and y directions.
+        If normalized is True, then the pixel coordinates are normalized to [-1, 1].
+        '''
+        xx, yy = self.pixel_meshgrid(shift=shift, normalized=normalized, skip_out_wrap=True)
+        return self.out_wrap( torch.stack( (xx, yy), dim=0 ).view((2, -1)).contiguous() )
+
     def pixel_2_ray(self, pixel_coor):
         '''
         Arguments:
