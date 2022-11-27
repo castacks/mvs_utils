@@ -103,7 +103,7 @@ class CameraModel(object):
         else:
             return x
 
-    def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False):
+    def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
         Get the meshgrid of the pixel centers.
         shift is appllied along the x and y directions.
@@ -112,14 +112,20 @@ class CameraModel(object):
         
         H, W = self.shape
         
-        x = torch.arange(W, dtype=torch.float32) + shift
-        y = torch.arange(H, dtype=torch.float32) + shift
+        x = torch.arange(W, dtype=torch.float32, device=self._device) + shift
+        y = torch.arange(H, dtype=torch.float32, device=self._device) + shift
         
         xx, yy = torch.meshgrid(x, y, indexing='xy')
+        
+        xx, yy = xx.contiguous(), yy.contiguous()
         
         if normalized:
             xx = xx / W * 2 - 1
             yy = yy / H * 2 - 1
+        
+        if flatten:
+            xx = xx.view((-1))
+            yy = yy.view((-1))
         
         if skip_out_wrap:
             return xx, yy
