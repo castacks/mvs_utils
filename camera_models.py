@@ -643,20 +643,16 @@ class Ocam(CameraModel):
         
         out = torch.stack( (y2, x2), dim=-2 )
         
-        return self.out_to_numpy( out ), \
-               self.out_to_numpy( theta <= self.fov_rad / 2.0 )
+        return self.out_wrap( out ), \
+               self.out_wrap( theta <= self.fov_rad / 2.0 )
     
-
-
-
 @register(CAMERA_MODELS)
 class Pinhole(CameraModel):
     def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
         
         # Compute the FoV from the specified parameters.
         im_h, im_w = shape_struct.shape 
-        self.fov_rad = 2 * math.atan2(im_w, 2 * fx)
-        fov_degree = self.fov_rad * 180.0 / LOCAL_PI
+        fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
         
         super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
@@ -672,10 +668,6 @@ class Pinhole(CameraModel):
         else:
             raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
         
-        self._device = None
-        self.in_to_tensor = in_to_tensor
-        self.out_to_numpy = out_to_numpy
-
         # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
         self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
                                    [ 0,      self.fy, self.cy ],
@@ -685,19 +677,11 @@ class Pinhole(CameraModel):
                                             [ 0,      1.0/self.fy, -self.cy / self.fy],
                                             [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
 
-    @property
-    def device(self):
-        return self._device
-
-    @device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        self._device = d
+        CameraModel.device.fset(self, d)
         self.inv_intrinsics.to(device=d)
         self.intrinsics.to(device=d)
-
-    @property
-    def shape(self):
-        return self.ss.shape
 
     def pixel_2_ray(self, uv):
         '''
@@ -716,7 +700,7 @@ class Pinhole(CameraModel):
         uv = self.in_wrap(uv).to(dtype=torch.float32)
         
         # Convert to honmogeneous coordinates.
-        uv1 = F.pad(uv, (0,0,0, 1), value=1)
+        uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
 
         # Convert to camera-frame (metric).
 
@@ -733,9 +717,10 @@ class Pinhole(CameraModel):
             mask = torch.ones(uv.shape[1])
         if len(uv.shape) == 3:
             mask = torch.ones((uv.shape[0], uv.shape[2]))
-        return xyz, mask
         
-
+        return self.out_wrap(xyz), \
+               self.out_wrap(mask)
+        
     def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
@@ -751,7 +736,6 @@ class Pinhole(CameraModel):
         '''
         point_3d = self.in_wrap(point_3d)
 
-        
         # Pixel coordinates projected from the world points. 
         uv_unnormalized = self.intrinsics @ point_3d
 
@@ -773,8 +757,8 @@ class Pinhole(CameraModel):
         pixel_coor = torch.cat( (px, py), dim=-2 )
 
         # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
-        valid_mask_px = torch.logical_and(px < self.ss.H, px > 0)
-        valid_mask_py = torch.logical_and(py < self.ss.W, py > 0)
+        valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
         valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
 
         # This is for the batched dimension.
