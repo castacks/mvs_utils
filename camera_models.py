@@ -14,6 +14,10 @@ LIDAR_MODELS = dict()
 
 LOCAL_PI = math.pi
 
+def deg2rad(deg):
+    global LOCAL_PI
+    return deg / 180.0 * LOCAL_PI
+
 def register(dst):
     '''Register a class to a destination dictionary. '''
     def dec_register(cls):
@@ -132,7 +136,7 @@ class CameraModel(SensorModel):
         self.cx = cx
         self.cy = cy
         self.fov_degree = fov_degree 
-        self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
+        self.fov_rad = deg2rad( self.fov_degree )
         
         self.padding_mode_if_being_sampled = 'zeros'
 
@@ -868,9 +872,17 @@ class LiDAR(SensorModel):
         
         rays_lidar_frame = self.get_rays_wrt_lidar_frame()
         rays_sensor_frame = self.R_sensor_lidar @ rays_lidar_frame
-        valid_mask = torch.ones( rays_sensor_frame.numel() )
+        valid_mask = torch.ones( rays_sensor_frame.shape[1] )
         
         return self.out_wrap( rays_sensor_frame.tensor() ), self.out_wrap( valid_mask )
+
+    def measure_wrt_lidar_frame(self, distance_measure):
+        '''
+        distance_measure (Tensor): A Bx1xN Tensor contains the measured distance value
+        for every element in self.az_el. B is batch number.
+        '''
+        rays_lidar_frame = self.get_rays_wrt_lidar_frame().tensor()
+        return rays_lidar_frame.unsqueeze(0).repeat(distance_measure.shape[0], 1, 1) * distance_measure
 
 @register(LIDAR_MODELS)
 class Velodyne(LiDAR):
@@ -879,12 +891,12 @@ class Velodyne(LiDAR):
         A list of dictionaries. The keys in teh dictionary are: E, resA, and offA. 
         They are the elevation angle, the resolution of the azimuth angle, and the offset of the azimuth angle.
         '''
-        
+
         # Assuming all scan lines have the same number of points.
-        n_points_per_scan_line = LOCAL_PI / description[0]['resA']
+        n_points_per_scanline = int( 360.0 / description[0]['resA'] )
         n_scanlines = len(description)
         
-        ss = ShapeStruct(H=n_scanlines, W=n_points_per_scan_line)
+        ss = ShapeStruct(H=n_scanlines, W=n_points_per_scanline)
         
         super().__init__(
             name='Velodyne',
@@ -895,23 +907,23 @@ class Velodyne(LiDAR):
         R_sensor_lidar = torch.tensor(
             [ [ -1,  0,  0], 
               [  0,  0, -1], 
-              [  0,  1,  0] ], dtype=torch.float32 )
+              [  0,  1,  0] ], dtype=torch.float32, device=self.device )
         
         # Override the parent.
-        self.R_sensor_lidar = FTensor( R_sensor_lidar, f0='sensor', f1='lidar', rotation=True, device=self.device )
+        self.R_sensor_lidar = FTensor( R_sensor_lidar, f0='sensor', f1='lidar', rotation=True)
         
         # Populate the azimuth and elevation angle arrayes.
-        self.az_el = torch.zeros( ( 2, n_scanlines, n_points_per_scan_line ), dtype=torch.float32, device=self.device )
+        self.az_el = torch.zeros( ( 2, n_scanlines, n_points_per_scanline ), dtype=torch.float32, device=self.device )
         
         eps = 1e-6
         
         for i, d in enumerate(description):
-            E = d['E']
-            res_a = d['resA']
-            off_a = d['offA']
+            E     = deg2rad( d['E']    )
+            res_a = deg2rad( d['resA'] )
+            off_a = deg2rad( d['offA'] )
             
             self.az_el[0, i, :] = \
-                torch.arange( 0, 2*LOCAL_PI + eps, res_a, dtype=torch.float32, device=self.device ) + off_a
+                torch.arange( 0, 2 * LOCAL_PI - eps, res_a, dtype=torch.float32, device=self.device ) + off_a
             
             self.az_el[1, i, :] = E
             
