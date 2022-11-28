@@ -174,13 +174,13 @@ class CameraModel(SensorModel):
         else:
             return self.out_wrap(xx), self.out_wrap(yy)
     
-    def pixel_coordinates(self, shift=0.5, normalized=False):
+    def pixel_coordinates(self, shift=0.5, normalized=False, flatten=False):
         '''
         Get the pixel coordinates.
         shift is appllied along the x and y directions.
         If normalized is True, then the pixel coordinates are normalized to [-1, 1].
         '''
-        xx, yy = self.pixel_meshgrid(shift=shift, normalized=normalized, skip_out_wrap=True)
+        xx, yy = self.pixel_meshgrid(shift=shift, normalized=normalized, skip_out_wrap=True, flatten=flatten)
         return self.out_wrap( torch.stack( (xx, yy), dim=0 ).view((2, -1)).contiguous() )
 
     def pixel_2_ray(self, pixel_coor):
