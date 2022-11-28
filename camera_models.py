@@ -6,9 +6,11 @@ import torch.nn.functional as F
 import math
 import sys
 
+from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
 
 CAMERA_MODELS = dict()
+LIDAR_MODELS = dict()
 
 LOCAL_PI = math.pi
 
@@ -62,17 +64,11 @@ def xyz_2_z_angle(x, y, z):
     return x2y2z_2_z_angle(x**2.0, y**2.0, z)
 
 
-class CameraModel(object):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
-        super(CameraModel, self).__init__()
-
+class SensorModel(object):
+    def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        super().__init__()
+        
         self.name = name
-        self.fx = fx
-        self.fy = fy
-        self.cx = cx
-        self.cy = cy
-        self.fov_degree = fov_degree 
-        self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
         
         if isinstance( shape_struct, dict ):
             self.ss = ShapeStruct( **shape_struct )
@@ -85,11 +81,17 @@ class CameraModel(object):
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
         
-        self.padding_mode_if_being_sampled = 'zeros'
-
     @property
     def shape(self):
         return self.ss.shape
+        
+    @property
+    def device(self):
+        return self._device
+
+    @device.setter
+    def device(self, d):
+        self._device = d
 
     def in_wrap(self, x):
         if self.in_to_tensor and not isinstance(x, torch.Tensor):
@@ -102,6 +104,42 @@ class CameraModel(object):
             return x.cpu().numpy()
         else:
             return x
+
+    def __deepcopy__(self, memo):
+        '''
+        https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
+        '''
+        cls = self.__class__ # Extract the class of the object
+        result = cls.__new__(cls) # Create a new instance of the object based on extracted class
+        memo[ id(self) ] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, copy.deepcopy(v, memo)) # Copy over attributes by copying directly or in case of complex objects like lists for exaample calling the `__deepcopy()__` method defined by them. Thus recursively copying the whole tree of objects.
+        return result
+    
+    def get_rays_wrt_sensor_frame(self, shift=0.5):
+        '''
+        This function returns the rays shoting from the sensor and a valid mask.
+        '''
+        raise NotImplementedError()
+        
+class CameraModel(SensorModel):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        super(CameraModel, self).__init__(
+            name=name, shape_struct=shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        self.fx = fx
+        self.fy = fy
+        self.cx = cx
+        self.cy = cy
+        self.fov_degree = fov_degree 
+        self.fov_rad = self.fov_degree / 180.0 * LOCAL_PI
+        
+        self.padding_mode_if_being_sampled = 'zeros'
+
+    @property
+    def f(self):
+        assert self.fx == self.fy
+        return self.fx
 
     def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
@@ -170,24 +208,12 @@ class CameraModel(object):
         '''
         raise NotImplementedError()
     
-    @property
-    def device(self):
-        return self._device
-
-    @device.setter
-    def device(self, d):
-        self._device = d
-
-    def __deepcopy__(self, memo):
+    def get_rays_wrt_sensor_frame(self, shift=0.5):
         '''
-        https://stackoverflow.com/questions/57181829/deepcopy-override-clarification#:~:text=In%20%22How%20to%20override%20the%20copy%2Fdeepcopy%20operations%20for,setattr%20%28result%2C%20k%2C%20deepcopy%20%28v%2C%20memo%29%29%20return%20result
+        This function returns the rays shoting from the sensor and a valid mask.
         '''
-        cls = self.__class__ # Extract the class of the object
-        result = cls.__new__(cls) # Create a new instance of the object based on extracted class
-        memo[ id(self) ] = result
-        for k, v in self.__dict__.items():
-            setattr(result, k, copy.deepcopy(v, memo)) # Copy over attributes by copying directly or in case of complex objects like lists for exaample calling the `__deepcopy()__` method defined by them. Thus recursively copying the whole tree of objects.
-        return result
+        pixel_coor = self.pixel_coordinates(shift=shift, flatten=True)
+        return self.pixel_2_ray( pixel_coor )
 
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
@@ -216,9 +242,9 @@ class DoubleSphere(CameraModel):
 
         return w1, w2
 
-    @CameraModel.device.setter
+    @SensorModel.device.setter
     def device(self, d):
-        CameraModel.device.fset(self, d)
+        SensorModel.device.fset(self, d)
         # Do nothing.
 
     def pixel_2_ray(self, pixel_coor):
@@ -396,9 +422,9 @@ class Equirectangular(CameraModel):
         # Override parent's variable.
         self.padding_mode_if_being_sampled = 'border'
 
-    @CameraModel.device.setter
+    @SensorModel.device.setter
     def device(self, d):
-        CameraModel.device.fset(self, d)
+        SensorModel.device.fset(self, d)
         
         self.longtitude_span = self.longitude_span.to(device=d)
         self.latitude_span   = self.latitude_span.to(device=d)
@@ -536,9 +562,9 @@ class Ocam(CameraModel):
         self.inv_poly_coeff = torch.as_tensor(inv_poly_coeff).to(dtype=torch.float32) # Only contains the coefficients.
         self.affine_coeff   = affine_coeff   # c, d, e
         
-    @CameraModel.device.setter
+    @SensorModel.device.setter
     def device(self, d):
-        CameraModel.device.fset(self, d)
+        SensorModel.device.fset(self, d)
     
         self.poly_coeff     = self.poly_coeff.to(device=d)
         self.inv_poly_coeff = self.inv_poly_coeff.to(device=d)
@@ -698,9 +724,9 @@ class Pinhole(CameraModel):
                                             [ 0,      1.0/self.fy, -self.cy / self.fy],
                                             [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
 
-    @CameraModel.device.setter
+    @SensorModel.device.setter
     def device(self, d):
-        CameraModel.device.fset(self, d)
+        SensorModel.device.fset(self, d)
         self.inv_intrinsics.to(device=d)
         self.intrinsics.to(device=d)
 
@@ -803,3 +829,108 @@ class Pinhole(CameraModel):
         return f'''Pinhole
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
+class LiDAR(SensorModel):
+    def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        super().__init__(
+            name=name,
+            shape_struct=shape_struct, 
+            in_to_tensor=in_to_tensor, 
+            out_to_numpy=out_to_numpy )
+    
+        # Sensor frame is the same as camera frame. z-axis forward, x-axis right, and y-axis down.
+        # Rotation matrix between sensor and LiDAR frames measured in the sensor frame.
+        self.R_sensor_lidar = f_eye(3, f0='sensor', f1='lidar', rotation=True, dtype=torch.float32, device=self.device)
+        
+        # The following angles are measured in the LiDAR frame.
+        # Azimuth and elevation angles. 
+        # 3D tensor. 2 x n_scanlines x n_points_per_scanline. In radians.
+        self.az_el = None
+    
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        
+        self.R_sensor_lidar = self.R_sensor_lidar.to(device=self._device)
+        self.az_el = self.az_el.to(device=self._device)
+    
+    def get_rays_wrt_lidar_frame(self):
+        '''
+        Returns a single ftensor of shape 3xN, where N is the number of points of all the scan lines.
+        '''
+        raise NotImplementedError()
+    
+    def get_rays_wrt_sensor_frame(self, shift=0.5):
+        '''
+        This function returns the rays shoting from the sensor and a valid mask.
+        shift is for compatibility with the camera model.
+        '''
+        
+        rays_lidar_frame = self.get_rays_wrt_lidar_frame()
+        rays_sensor_frame = self.R_sensor_lidar @ rays_lidar_frame
+        valid_mask = torch.ones( rays_sensor_frame.numel() )
+        
+        return self.out_wrap( rays_sensor_frame.tensor() ), self.out_wrap( valid_mask )
+
+@register(LIDAR_MODELS)
+class Velodyne(LiDAR):
+    def __init__(self, description, in_to_tensor=False, out_to_numpy=False):
+        '''
+        A list of dictionaries. The keys in teh dictionary are: E, resA, and offA. 
+        They are the elevation angle, the resolution of the azimuth angle, and the offset of the azimuth angle.
+        '''
+        
+        # Assuming all scan lines have the same number of points.
+        n_points_per_scan_line = LOCAL_PI / description[0]['resA']
+        n_scanlines = len(description)
+        
+        ss = ShapeStruct(H=n_scanlines, W=n_points_per_scan_line)
+        
+        super().__init__(
+            name='Velodyne',
+            shape_struct=ss, 
+            in_to_tensor=in_to_tensor, 
+            out_to_numpy=out_to_numpy )
+        
+        R_sensor_lidar = torch.tensor(
+            [ [ -1,  0,  0], 
+              [  0,  0, -1], 
+              [  0,  1,  0] ], dtype=torch.float32 )
+        
+        # Override the parent.
+        self.R_sensor_lidar = FTensor( R_sensor_lidar, f0='sensor', f1='lidar', rotation=True, device=self.device )
+        
+        # Populate the azimuth and elevation angle arrayes.
+        self.az_el = torch.zeros( ( 2, n_scanlines, n_points_per_scan_line ), dtype=torch.float32, device=self.device )
+        
+        eps = 1e-6
+        
+        for i, d in enumerate(description):
+            E = d['E']
+            res_a = d['resA']
+            off_a = d['offA']
+            
+            self.az_el[0, i, :] = \
+                torch.arange( 0, 2*LOCAL_PI + eps, res_a, dtype=torch.float32, device=self.device ) + off_a
+            
+            self.az_el[1, i, :] = E
+            
+        self.desc = description
+    
+    # Override the parent's function.
+    def get_rays_wrt_lidar_frame(self):
+        '''
+        Returns a single ftensor of shape 3xN, where N is the number of points of all the scan lines.
+        This is the Velodyne definition, with y-axis forward, x-right, and z-up.
+        '''
+        
+        cos_a = torch.cos( self.az_el[0, :, :] )
+        sin_a = torch.sin( self.az_el[0, :, :] )
+        cos_E = torch.cos( self.az_el[1, :, :] )
+        sin_E = torch.sin( self.az_el[1, :, :] )
+        
+        x = cos_E * sin_a
+        y = cos_E * cos_a
+        z = sin_E
+        
+        return FTensor( torch.stack( (x, y, z), dim=0 ).reshape( (3, -1) ), f0='lidar' )
