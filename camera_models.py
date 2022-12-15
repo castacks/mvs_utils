@@ -127,7 +127,7 @@ class SensorModel(object):
         raise NotImplementedError()
         
 class CameraModel(SensorModel):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False,device='cpu'):
         super(CameraModel, self).__init__(
             name=name, shape_struct=shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
@@ -137,6 +137,7 @@ class CameraModel(SensorModel):
         self.cy = cy
         self.fov_degree = fov_degree 
         self.fov_rad = deg2rad( self.fov_degree )
+        self._device=device
         
         self.padding_mode_if_being_sampled = 'zeros'
 
@@ -229,6 +230,7 @@ class DoubleSphere(CameraModel):
         self.alpha = alpha
         self.xi = xi
 
+        self.fov_degree_longitude = self.fov_degree_latitude = fov_degree
         # w1 and w2 are defined in the origial paper.
         w1, w2 = self.get_w1_w2()
         self.w1 = w1
@@ -699,13 +701,13 @@ class Ocam(CameraModel):
     
 @register(CAMERA_MODELS)
 class Pinhole(CameraModel):
-    def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False,device='cpu'):
         
         # Compute the FoV from the specified parameters.
         im_h, im_w = shape_struct.shape 
         fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
         
-        super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy,device=device)
 
         # FoV for both longitude (x and width) and latitude (y and height).
         self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
@@ -785,7 +787,7 @@ class Pinhole(CameraModel):
         A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
         A (N,) Tensor representing the valid mask. BxN if batched.
         '''
-        point_3d = self.in_wrap(point_3d)
+        point_3d = self.in_wrap(point_3d).to(dtype=torch.float32)
 
         # Pixel coordinates projected from the world points. 
         uv_unnormalized = self.intrinsics @ point_3d
