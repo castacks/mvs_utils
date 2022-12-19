@@ -836,6 +836,229 @@ class Pinhole(CameraModel):
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
 
+@register(CAMERA_MODELS)
+class PinholeRadTan(CameraModel):
+    def __init__(self, fx, fy, cx, cy, k1, k2, p1, p2, shape_struct, in_to_tensor=False, out_to_numpy=False,device='cpu'):
+        
+        # Compute the FoV from the specified parameters.
+        im_h, im_w = shape_struct.shape 
+        fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        
+        super().__init__('PinholeRadTan', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy,device=device)
+
+
+        self.k1 = k1
+        self.k2 = k2 
+        self.p1 = p1
+        self.p2 = p2
+
+        # FoV for both longitude (x and width) and latitude (y and height).
+        self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(im_h, 2 * fy) * 180.0 / LOCAL_PI
+        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
+
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
+        # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
+        self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
+                                   [ 0,      self.fy, self.cy ],
+                                   [ 0,      0      ,      1.0]]).to(dtype=torch.float32, device=self._device)
+
+        self.inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
+                                            [ 0,      1.0/self.fy, -self.cy / self.fy],
+                                            [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
+
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        self.inv_intrinsics.to(device=d)
+        self.intrinsics.to(device=d)
+    
+
+    def distort(self,y):
+        
+        y = self.in_wrap(y).to(dtype=torch.float32)
+        J = torch.zeros((2,2)).to(dtype=torch.float32, device=self._device)
+
+        mx2_u = y[0] * y[0]
+        my2_u = y[1] * y[1]
+        mxy_u = y[0] * y[1]
+        rho2_u = mx2_u + my2_u
+
+        rad_dist_u = self.k1 * rho2_u + self.k2 * rho2_u * rho2_u
+
+        J[0,0] = 1 + rad_dist_u + self.k1 * 2.0 * mx2_u + self.k2 * rho2_u * 4 * mx2_u + 2.0 * self.p1 * y[1] + 6 * self.p2 * y[0]
+        J[1, 0] = self.k1 * 2.0 * y[0] * y[1] + self.k2 * 4 * rho2_u * y[0] * y[1]  + self.p1 * 2.0 * y[0] + 2.0 * self.p2 * y[1]
+        J[0, 1] = J[1, 0]
+        J[1, 1] = 1 + rad_dist_u + self.k1 * 2.0 * my2_u + self.k2 * rho2_u * 4 * my2_u + 6 * self.p1 * y[1] + 2.0 * self.p2 * y[0]
+
+        y[0] += y[0] * rad_dist_u + 2.0 * self.p1 * mxy_u + self.p2 * (rho2_u + 2.0 * mx2_u)
+        y[1] += y[1] * rad_dist_u + 2.0 * self.p2 * mxy_u + self.p1 * (rho2_u + 2.0 * my2_u)
+
+        return y, J
+    
+    def undistort(self,y,homogeneous = False):
+
+        n = 5
+        y_tmp = None
+        ybar = y.clone()
+
+        for i in range(n):
+            y_tmp = ybar.clone()
+            y_tmp, F = self.distort(y_tmp)
+            e = y - y_tmp
+            du = torch.linalg.inv(F.T @ F) @ F.T @ e
+            
+            ybar += du
+            if (e.dot(e) < 1e-15):
+                break
+        
+        if homogeneous:
+            ybar = torch.tensor([ybar[0],ybar[1],1.0]).to(dtype=torch.float32, device=self._device)
+
+        return ybar
+
+
+    def normalize_point(self,y,homogeneous=False):
+        if homogeneous:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def unnormalize_point(self,y,homogeneous=False):
+        if homogeneous:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+
+    def pixel_2_ray(self, uv):
+        '''
+        Arguments:
+        uv (Tensor): A 2xN Tensor contains the pixel coordinates. 
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch size.
+        
+        Returns:
+        A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = uv.shape[1]
+        xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
+        for i in range(N):
+            xyz[:,i] = self.undistort(self.normalize_point(uv[:,i]),homogeneous=True)
+
+        # Convert to honmogeneous coordinates.
+        # uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
+
+        # Convert to camera-frame (metric).
+
+        # xyz = self.inv_intrinsics @ uv1
+
+        # Normalize rays to be unit length.
+        xyz = xyz / torch.linalg.norm(xyz, dim = -2, keepdims= True)
+
+        # Mask points that are out of field of view.
+        # Currently returning a mask of only ones as all pixels are assumed to be with valid values, and the projection out of the image frame of all pixels is valid.
+        # The following if-statements match the dimensionality of batched inputs.
+        # NOTE(yoraish): why should there be any??
+        if len(uv.shape) == 2:
+            mask = torch.ones(uv.shape[1])
+        if len(uv.shape) == 3:
+            mask = torch.ones((uv.shape[0], uv.shape[2]))
+        
+        return self.out_wrap(xyz), \
+               self.out_wrap(mask)
+        
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number.
+        
+        Returns: 
+        A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        point_3d = self.in_wrap(point_3d).to(dtype=torch.float32)
+
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = point_3d.shape[1]
+        for i in range(N):
+            point_3d[:,i] = self.unnormalize_point(self.distort(torch.tensor([point_3d[0,i]/point_3d[-1,i],point_3d[1,i]/point_3d[-1,i]]))[0],homogeneous=True)
+
+        uv = point_3d
+        # Pixel coordinates projected from the world points. 
+        # uv_unnormalized = self.intrinsics @ point_3d
+
+        # Normalize the homogenous coordinate-points such that their z-value is 1. The expression uv_unnormalized[..., -1:, :] keeps the dimension of the tensor, which is required by the division operation since PyTorch has trouble to broadcast the operation. 
+        # uv = torch.div(uv_unnormalized, uv_unnormalized[..., -1:, :])
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+
+
+        # Do torch.split results in Bx1XN.
+        px, py, _ = torch.split( uv, 1, dim=-2 )
+
+        if normalized:
+            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
+            # px = px / ( self.ss.W - 1 ) * 2 - 1
+            # py = py / ( self.ss.H - 1 ) * 2 - 1
+            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
+
+        # pixel_coor = torch.stack( (px, py), dim=0 )
+        pixel_coor = torch.cat( (px, py), dim=-2 )
+
+        # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
+        valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
+        valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
+
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+        
+    
+    def __repr__(self) -> str:
+        return f'''An instance of Pinhole CameraModel
+        Height : {self.ss.shape[0]}
+        Width : {self.ss.shape[1]}
+        fx : {self.fx}
+        fy : {self.fy}
+        cx : {self.cx}
+        cy : {self.cy}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        device: {self._device}'''
+
+    def __str__(self) -> str:
+        return f'''Pinhole
+        Shape : {self.ss.shape}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
+
+
+
 class LiDAR(SensorModel):
     def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
         super().__init__(
