@@ -74,17 +74,30 @@ class SensorModel(object):
         
         self.name = name
         
-        if isinstance( shape_struct, dict ):
-            self.ss = ShapeStruct( **shape_struct )
-        elif isinstance( shape_struct, ShapeStruct ):
-            self.ss = shape_struct
-        else:
-            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        self._ss = None # Initial value.
+        self.ss = shape_struct # Update self._ss.
         
         self._device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
-        
+    
+    @staticmethod
+    def make_shape_struct_from_repr(shape_struct):
+        if isinstance( shape_struct, dict ):
+            return ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            return shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+    
+    @property
+    def ss(self):
+        return self._ss
+
+    @ss.setter
+    def ss(self, shape_struct):
+        self._ss = SensorModel.make_shape_struct_from_repr(shape_struct)
+    
     @property
     def shape(self):
         return self.ss.shape
@@ -140,10 +153,14 @@ class CameraModel(SensorModel):
         
         self.padding_mode_if_being_sampled = 'zeros'
 
-    @property
-    def f(self):
+    def _f(self):
         assert self.fx == self.fy
         return self.fx
+
+    @property
+    def f(self):
+        # _f() is here to be called by child classes.
+        return self._f()
 
     def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
@@ -218,7 +235,36 @@ class CameraModel(SensorModel):
         '''
         pixel_coor = self.pixel_coordinates(shift=shift, flatten=True)
         return self.pixel_2_ray( pixel_coor )
-
+    
+    def _resize(self, new_shape_struct):
+        '''
+        In place operation. Child class should overload this method to perform appropriate operations.
+        '''
+        
+        factor_x = new_shape_struct.W / self.ss.W
+        factor_y = new_shape_struct.H / self.ss.H
+        
+        self.fx = self.fx * factor_x
+        self.fy = self.fy * factor_y
+        
+        self.cx = self.cx * factor_x
+        self.cy = self.cy * factor_y
+        
+        self.ss = new_shape_struct
+    
+    def get_resized(self, new_shape_struct):
+        resized = copy.deepcopy(self)
+        
+        if self.ss == new_shape_struct:
+            return resized
+        
+        # Child class may overload the _resize() method.
+        device = self.device
+        resized._resize(new_shape_struct)
+        resized.device = device
+        
+        return resized
+        
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
 class DoubleSphere(CameraModel):
@@ -385,34 +431,16 @@ class Equirectangular(CameraModel):
         forward direction and the middle of the image is the zero longitude angle.
         '''
 
-        shape_struct = ShapeStruct.read_shape_struct(shape_struct)
-
-        # Full longitude span is [-pi, pi], with possible shift or crop.
-        # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
-        # The actual longitude span that all the pixels cover.
-        self.lon_span_pixel = longitude_span[1] - longitude_span[0]
-        assert self.lon_span_pixel <= 2 * LOCAL_PI, \
-            f'logintude_span is over 2pi: {longitude_span}, longitude_span[1] - longitude_span[0] = {self.lon_span_pixel}. '
+        # These two members are used during the call to set_members_by_shape_struct() and _resize().
+        self.init_longitude_span = longitude_span
+        self.init_latitude_span  = latitude_span
         
-        # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
         self.open_span = open_span
-        if self.open_span:
-            # TODO: Potential bug if cx is not at the center of the image.
-            # self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
-            self.lon_span_pixel = ( shape_struct.W - 1 ) / shape_struct.W * self.lon_span_pixel
-        
-        assert latitude_span[0] >= -LOCAL_PI / 2 and latitude_span[1] <= LOCAL_PI / 2, \
-            f'latitude_span is wrong: {latitude_span}. '
-        
-        self.longitude_span = torch.Tensor( [ longitude_span[0], longitude_span[1] ] ).to(dtype=torch.float32)
-        self.latitude_span  = torch.Tensor( [ latitude_span[0],  latitude_span[1]  ] ).to(dtype=torch.float32)
-
-        # Figure out the virtual image center.
-        cx = ( 0 - longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
-        cy = ( 0 - latitude_span[0] ) / ( latitude_span[1] - latitude_span[0] ) * ( shape_struct.H - 1 )
 
         super(Equirectangular, self).__init__(
-            'equirectangular', 1, 1, cx, cy, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'equirectangular', 1, 1, 0.5, 0.5, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        # cx, cy will be updated.
+        self.set_members_by_shape_struct(self.ss)
 
         # # Since lon_shift is applied by adding to the longitude span, the shifted frame has a measured
         # # rotation of -lon_shift, w.r.t. the original frame. Thus, the shifted frame has a rotation 
@@ -425,6 +453,40 @@ class Equirectangular(CameraModel):
         
         # Override parent's variable.
         self.padding_mode_if_being_sampled = 'border'
+
+    def set_members_by_shape_struct(self, shape_struct):
+        # Full longitude span is [-pi, pi], with possible shift or crop.
+        # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
+        # The actual longitude span that all the pixels cover.
+        self.lon_span_pixel = self.init_longitude_span[1] - self.init_longitude_span[0]
+        assert self.lon_span_pixel <= 2 * LOCAL_PI, \
+            f'logintude_span is over 2pi: {self.init_longitude_span}, longitude_span[1] - longitude_span[0] = {self.lon_span_pixel}. '
+        
+        # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
+        if self.open_span:
+            # TODO: Potential bug if cx is not at the center of the image.
+            # self.lon_span_pixel = 2*self.cx / ( 2*self.cx + 1 ) * self.lon_span_pixel
+            self.lon_span_pixel = ( shape_struct.W - 1 ) / shape_struct.W * self.lon_span_pixel
+        
+        assert self.init_latitude_span[0] >= -LOCAL_PI / 2 and self.init_latitude_span[1] <= LOCAL_PI / 2, \
+            f'latitude_span is wrong: {self.init_latitude_span}. '
+        
+        self.longitude_span = torch.Tensor( [ self.init_longitude_span[0], self.init_longitude_span[1] ] ).to(dtype=torch.float32)
+        self.latitude_span  = torch.Tensor( [ self.init_latitude_span[0],  self.init_latitude_span[1]  ] ).to(dtype=torch.float32)
+
+        # Figure out the virtual image center.
+        self.cx = ( 0 - self.init_longitude_span[0] ) / self.lon_span_pixel * ( shape_struct.W - 1 )
+        self.cy = ( 0 - self.init_latitude_span[0] ) / ( self.init_latitude_span[1] - self.init_latitude_span[0] ) * ( shape_struct.H - 1 )
+
+    # TODO: Which is better: direct scale or calling set_members_by_shape_struct()?
+    def _resize(self, new_shape_struct):
+        self.set_members_by_shape_struct(new_shape_struct)
+        self.ss = new_shape_struct
+
+    @SensorModel.f.getter
+    def f(self):
+        print(f'Warning, the focal length of an {self.name} model has no meaning. ')
+        return self._f()
 
     @SensorModel.device.setter
     def device(self, d):
@@ -565,13 +627,22 @@ class Ocam(CameraModel):
         self.poly_coeff     = torch.as_tensor(poly_coeff).to(dtype=torch.float32)     # Only contains the coefficients.
         self.inv_poly_coeff = torch.as_tensor(inv_poly_coeff).to(dtype=torch.float32) # Only contains the coefficients.
         self.affine_coeff   = affine_coeff   # c, d, e
-        
+    
+    @CameraModel.f.getter
+    def f(self):
+        print(f'Warning, the focal length of an {self.name} model has no meaning. ')
+        return self._f()
+    
     @SensorModel.device.setter
     def device(self, d):
         SensorModel.device.fset(self, d)
     
         self.poly_coeff     = self.poly_coeff.to(device=d)
         self.inv_poly_coeff = self.inv_poly_coeff.to(device=d)
+    
+    def _resize(self, new_shape_struct):
+        # Currently not supported.
+        raise NotImplementedError()
     
     @staticmethod
     def poly_eval(poly_coeff, x):
@@ -702,31 +773,33 @@ class Pinhole(CameraModel):
     def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
         
         # Compute the FoV from the specified parameters.
-        im_h, im_w = shape_struct.shape 
-        fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        shape_struct = SensorModel.make_shape_struct_from_repr(shape_struct)
+        fov_degree = 2 * math.atan2(shape_struct.W, 2 * fx) * 180.0 / LOCAL_PI
         
         super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
-        # FoV for both longitude (x and width) and latitude (y and height).
-        self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
-        self.fov_degree_latitude  = 2 * math.atan2(im_h, 2 * fy) * 180.0 / LOCAL_PI
-        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
+        self.set_members_by_shape_struct(shape_struct)
 
-        if isinstance( shape_struct, dict ):
-            self.ss = ShapeStruct( **shape_struct )
-        elif isinstance( shape_struct, ShapeStruct ):
-            self.ss = shape_struct
-        else:
-            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+    def set_members_by_shape_struct(self, shape_struct):
+        # FoV for both longitude (x and width) and latitude (y and height).
+        self.fov_degree_longitude = 2 * math.atan2(shape_struct.W, 2 * self.fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(shape_struct.H, 2 * self.fy) * 180.0 / LOCAL_PI
+        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
         
         # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
-        self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
-                                   [ 0,      self.fy, self.cy ],
-                                   [ 0,      0      ,      1.0]]).to(dtype=torch.float32, device=self._device)
+        self.intrinsics = torch.tensor(
+            [ [self.fx, 0      , self.cx ],
+              [ 0,      self.fy, self.cy ],
+              [ 0,      0      ,      1.0] ] ).to(dtype=torch.float32, device=self._device)
 
-        self.inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
-                                            [ 0,      1.0/self.fy, -self.cy / self.fy],
-                                            [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
+        self.inv_intrinsics = torch.tensor(
+            [ [1.0/self.fx, 0      , -self.cx / self.fx],
+              [ 0,      1.0/self.fy, -self.cy / self.fy],
+              [ 0,      0      ,                    1.0] ] ).to(dtype=torch.float32, device=self._device)
+
+    def _resize(self, new_shape_struct):
+        super()._resize(new_shape_struct) # self.ss is updated.
+        self.set_members_by_shape_struct(new_shape_struct)
 
     @SensorModel.device.setter
     def device(self, d):

@@ -42,3 +42,6 @@ class ShapeStruct(object):
 
     def __repr__(self) -> str:
         return f'ShapeStruct(H={self.H}, W={self.W})'
+    
+    def __eq__(self, other):
+        return self.H == other.H and self.W == other.W and self.C == other.C
