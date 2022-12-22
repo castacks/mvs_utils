@@ -411,6 +411,22 @@ class DoubleSphere(CameraModel):
         valid_mask = valid_mask.squeeze(-2)
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+    
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "xi": {self.xi},
+    "alpha": {self.alpha},
+    "fx": {self.fx},
+    "fy": {self.fy},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "fov_degree": {self.fov_degree},
+    "shape_struct": {self.ss},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy}
+}}'''
 
 @register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
@@ -483,7 +499,7 @@ class Equirectangular(CameraModel):
         self.set_members_by_shape_struct(new_shape_struct)
         self.ss = new_shape_struct
 
-    @SensorModel.f.getter
+    @CameraModel.f.getter
     def f(self):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()

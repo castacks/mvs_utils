@@ -106,7 +106,7 @@ def parse_frame_graph( json_obj, G, typical_transforms ):
         # Add ft to the graph.
         G.add_or_update_pose_edge(ft)
 
-def read_frame_graph(fn):
+def read_frame_graph(fn, additional_info=False):
     '''
     Read a frame graph from a JSON file.
     '''
@@ -127,4 +127,39 @@ def read_frame_graph(fn):
     # Parse the transforms between the frames and add edges to the graph.
     parse_frame_graph( json_obj, G, typical_transforms )
     
-    return G
+    if not additional_info:
+        return G
+    
+    additional_info_dict = dict()
+    for key, value in json_obj.items():
+        if key not in ('frames', 'typical_poses', 'transforms'):
+            additional_info_dict[key] = value
+            
+    return G, additional_info_dict
+
+def node_2_dict(n):
+    return {
+        'name': n['data'].name,
+        'comment': n['data'].comment
+    }
+
+def edge_2_dict(e):
+    '''
+    Return the dictionary representation of an edge.
+    '''
+    ft = e['pose']
+    position_array = ft.translation.cpu().numpy().reshape((-1,))
+    rotation_array = ft.rotation.cpu().numpy().reshape((-1,))
+    
+    return {
+        'f0': ft.f0,
+        'f1': ft.f1,
+        'pose': {
+            'type': 'create',
+            'position': position_array,
+            'orientation': {
+                'type': 'rotation_matrix',
+                'data': rotation_array
+            }
+        }
+    }

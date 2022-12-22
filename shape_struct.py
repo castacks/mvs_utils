@@ -40,6 +40,9 @@ class ShapeStruct(object):
     def C(self):
         return self._C
 
+    def __str__(self) -> str:
+        return f'{{ "H": {self.H}, "W": {self.W}, "C": {self.C} }}'
+
     def __repr__(self) -> str:
         return f'ShapeStruct(H={self.H}, W={self.W})'
     
