@@ -181,6 +181,59 @@ def parse_for_frame_graph(args, yobj):
     
     return mvs_frame_2_kalibr_map
 
+def write_camera_model_repr_dict(fn, camera_model_repr_dict):
+    pd = PrettyDict()
+    
+    # Populate the values of pd.
+    pd['camera_models'] = camera_model_repr_dict
+    
+    # Assign printers automatically.
+    pd.auto_update_printer()
+    
+    # Visualize.
+    s = pd.make_str()
+    print(s)
+
+    # Write.
+    with open(fn, 'w') as fp:
+        fp.write( s )
+
+def parse_for_manifest(args, yobj, mvs_frame_2_kalibr_map):
+    # Create a dict of camra model representations.
+    camera_model_repr_dict = dict()
+    for mvs_key, kalibr_key in mvs_frame_2_kalibr_map.items():
+        # Get the Kalibr dict.
+        kalibr_cam_dict = yobj[kalibr_key]
+        
+        assert kalibr_cam_dict['camera_model'] == 'ds', \
+            f'Only supports Double Sphere model (ds). Got {kalibr_cam_dict["camera_model"]}'
+        
+        intrinsics = kalibr_cam_dict['intrinsics']
+        resolution = kalibr_cam_dict['resolution']
+        
+        camera_model_repr_dict[f'cam_model_{mvs_key}'] = {
+            'type': 'DoubleSphere',
+            'xi': intrinsics[0],
+            'alpha': intrinsics[1],
+            'fx': intrinsics[2],
+            'fy': intrinsics[3],
+            'cx': intrinsics[4],
+            'cy': intrinsics[5],
+            'fov_degree': kalibr_cam_dict['fov_degree'],
+            'shape_struct': { 
+                'H': resolution[1], 
+                'W': resolution[0] 
+            },
+            'in_to_tensor': True,
+            'out_to_numpy': False
+        }
+    
+    # Prepare the output directory.
+    test_directory_by_filename(args.out_camera_models)
+    
+    # Save the dict.
+    write_camera_model_repr_dict(args.out_camera_models, camera_model_repr_dict)
+
 def handle_args():
     parser = argparse.ArgumentParser(description='Parse Kalibr YAML file for MVS. ')
     
@@ -190,6 +243,8 @@ def handle_args():
                         help='The JSON file describing a graph that has one camera of Kalibr and a frame defined by MVS. ')
     parser.add_argument('--out-graph-components', type=str, default='./frame_graph_components.json',
                         help='The output filename for the frame graph components generated from infile and graphfile. ')
+    parser.add_argument('--out-camera-models', type=str, default='./camera_models.json',
+                        help='The output filename for the camera models. ')
     
     return parser.parse_args()
 
@@ -200,4 +255,6 @@ if __name__ == '__main__':
     yobj = read_customized_kalibr_yaml(args.infile)
     print(yobj)
     
-    parse_for_frame_graph(args, yobj)
+    mvs_frame_2_kalibr_map = parse_for_frame_graph(args, yobj)
+    parse_for_manifest(args, yobj, mvs_frame_2_kalibr_map)
+    
