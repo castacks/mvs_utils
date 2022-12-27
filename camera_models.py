@@ -9,6 +9,8 @@ import sys
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
 
+from .compatible_torch import torch_meshgrid
+
 CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
 
@@ -174,7 +176,9 @@ class CameraModel(SensorModel):
         x = torch.arange(W, dtype=torch.float32, device=self._device) + shift
         y = torch.arange(H, dtype=torch.float32, device=self._device) + shift
         
-        xx, yy = torch.meshgrid(x, y, indexing='xy')
+        # Compatibility issue with Jetpack 4.6 where
+        # Python is 3.6, PyTorch is 1.8.
+        xx, yy = torch_meshgrid(x, y, indexing='xy')
         
         xx, yy = xx.contiguous(), yy.contiguous()
         
