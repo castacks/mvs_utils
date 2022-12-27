@@ -7,7 +7,7 @@ import torch
 
 # Test torch.meshgrid()
 try:
-    torch.meshgrid( torch.rand([3, 3]), torch.rand([3, 3]), indexing='ij' )
+    torch.meshgrid( torch.rand((3,)), torch.rand((3,)), indexing='ij' )
     
     # No error.
     def torch_meshgrid(*args, indexing='xy'):
