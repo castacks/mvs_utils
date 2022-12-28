@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import math
 import sys
 
+from .debug import ( show_obj, show_sum )
+
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
 
@@ -584,6 +586,8 @@ class Equirectangular(CameraModel):
         
         point_3d = self.in_wrap(point_3d)
         
+        show_sum(point_3d=point_3d)
+        
         # Input z and x coordinates.
         z_x_in = point_3d[ ..., [2, 0], : ]
         
@@ -602,6 +606,8 @@ class Equirectangular(CameraModel):
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
+        show_sum(r=r, lat=lat, lon=lon, p_x=p_x, p_y=p_y)
+
         if normalized:
             # [-1, 1]
             p_y = p_y * 2 - 1
@@ -612,6 +618,8 @@ class Equirectangular(CameraModel):
             # After changing the pixel coordinate definiton.
             p_y = p_y * self.ss.H
             p_x = p_x * self.ss.W
+        
+        show_sum(p_x=p_x, p_y=p_y)
         
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
