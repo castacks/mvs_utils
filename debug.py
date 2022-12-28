@@ -17,8 +17,9 @@ def show_msg(msg):
 
 def show_obj(**kwargs):
     str_caller_line = caller_line()
+    print(f'\n>>> DEBUG >>> {str_caller_line}: objects: ')
     for key, value in kwargs.items():
-        print(f'\n>>> DEBUG >>> {str_caller_line}: \n{key}: {value}')
+        print(f'{key}: {value}')
 
 def show_sum(**kwargs):
     str_caller_line = caller_line()
@@ -27,3 +28,14 @@ def show_sum(**kwargs):
     print(f'\n>>> DEBUG >>> {str_caller_line}: sum of objects: ')
     for key, value in kwargs.items():
         print(f'{key}: {torch.sum(value)}')
+        
+def show_elements(indices, **kwargs):
+    str_caller_line = caller_line()
+    
+    print(f'\n>>> DEBUG >>> {str_caller_line}: element of objects: ')
+    for key, value in kwargs.items():
+        print(f'{key}: ', end='')
+        for elem in value.view((-1))[indices]:
+            print(f'{elem}, ', end='')
+        print()
+        

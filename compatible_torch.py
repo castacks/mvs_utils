@@ -11,7 +11,8 @@ try:
     
     # No error.
     def torch_meshgrid(*args, indexing='xy'):
-        return torch.meshgrid(*args, indexing=indexing)
+        res = torch.meshgrid(*args, indexing=indexing)
+        return [ r.contiguous() for r in res ]
     
 except TypeError as exc:
     print('meshgrid() compatibility issue detected. The exception is: ')
@@ -25,11 +26,12 @@ except TypeError as exc:
     print('Use a customized version of torch.meshgrid(). ')
 
     def meshgrid_ij(*args):
-        return torch.meshgrid(*args)
+        res = torch.meshgrid(*args)
+        return [ r.contiguous() for r in res ]
 
     def meshgrid_xy(*args):
         res = torch.meshgrid(*args[::-1])
-        return res[::-1]
+        return [ r.contiguous() for r in res[::-1] ]
 
     def torch_meshgrid(*args, indexing='xy'):
         if indexing == 'xy':
