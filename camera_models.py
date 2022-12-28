@@ -606,7 +606,7 @@ class Equirectangular(CameraModel):
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
-        show_sum(r=r, lat=lat, lon=lon, p_x=p_x, p_y=p_y)
+        show_sum(r=r, lat=lat, lon=torch.abs(lon), p_x=p_x, p_y=p_y)
 
         if normalized:
             # [-1, 1]
@@ -619,7 +619,7 @@ class Equirectangular(CameraModel):
             p_y = p_y * self.ss.H
             p_x = p_x * self.ss.W
         
-        show_sum(p_x=p_x, p_y=p_y)
+        show_sum(p_x=torch.abs(p_x), p_y=torch.abs(p_y))
         
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
