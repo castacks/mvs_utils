@@ -616,6 +616,23 @@ class Equirectangular(CameraModel):
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
 
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "init_longitude_span": {self.init_longitude_span},
+    "init_latitude_span": {self.init_latitude_span}
+    "open_span": {self.open_span},
+    "lon_span_pixel": {self.lon_span_pixel},
+    "longitude_span": {self.longitude_span},
+    "latitude_span": {self.latitude_span},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "padding_mode_if_being_sampled": {self.padding_mode_if_being_sampled},
+    "shape_struct": {self.ss},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy} }}'''
+
 @register(CAMERA_MODELS)
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
