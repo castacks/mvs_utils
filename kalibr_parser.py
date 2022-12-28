@@ -138,11 +138,15 @@ def visualize_frames(G, frame_names, base_frame_name):
         # Create a pytransform3d transform.
         tr = pt.transform_from( R=R, p=t )
         tm.add_transform( frame, base_frame_name, tr )
-        
-    ax = tm.plot_frames_in(base_frame_name, s=0.1)
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    ax = tm.plot_frames_in(base_frame_name, ax=ax, s=0.1)
+    
     ax.set_xlim(-0.4, 0.4)
     ax.set_ylim(-0.4, 0.4)
-    ax.set_ylim(-0.4, 0.4)
+    ax.set_zlim(-0.2, 0.2)
     plt.show()
 
 def parse_for_frame_graph(args, yobj):
