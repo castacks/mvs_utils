@@ -38,4 +38,12 @@ def show_elements(indices, **kwargs):
         for elem in value.view((-1))[indices]:
             print(f'{elem}, ', end='')
         print()
-        
+
+def save_tensor(fn, **kwargs):
+    str_caller_line = caller_line()
+    
+    print(f'\n>>> DEBUG >>> {str_caller_line}: save tensors: ')
+    names = [ key for key in kwargs.keys() ]
+    torch.save( kwargs, fn )
+    print(f'{names} saved to {fn}')
+    
