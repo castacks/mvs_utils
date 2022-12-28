@@ -586,7 +586,7 @@ class Equirectangular(CameraModel):
         
         point_3d = self.in_wrap(point_3d)
         
-        show_sum(point_3d=point_3d)
+        show_sum(point_3d=point_3d, point_3d_abs=torch.abs(point_3d))
         
         # Input z and x coordinates.
         z_x_in = point_3d[ ..., [2, 0], : ]
@@ -606,7 +606,7 @@ class Equirectangular(CameraModel):
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
-        show_sum(r=r, lat=lat, lon=torch.abs(lon), p_x=p_x, p_y=p_y)
+        show_sum(r=r, lat=lat, lon=lon, lon_abs=torch.abs(lon), p_x=p_x, p_y=p_y)
 
         if normalized:
             # [-1, 1]
