@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import math
 import sys
 
-from .debug import ( show_obj, show_sum )
+from .debug import ( show_msg, show_obj, show_sum )
 
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
@@ -590,6 +590,7 @@ class Equirectangular(CameraModel):
         
         # Input z and x coordinates.
         z_x_in = point_3d[ ..., [2, 0], : ]
+        show_msg(f'z_x_in.dtype = {z_x_in.dtype}')
         
         # Compute latitude.
         # r = torch.linalg.norm(point_3d, dim=-2)
