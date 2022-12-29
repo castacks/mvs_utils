@@ -165,7 +165,7 @@ class CameraModel(SensorModel):
     def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
         Get the meshgrid of the pixel centers.
-        shift is appllied along the x and y directions.
+        shift is applied along the x and y directions.
         If normalized is True, then the pixel coordinates are normalized to [-1, 1].
         '''
         
@@ -892,12 +892,19 @@ class Pinhole(CameraModel):
             px = px / self.ss.W * 2 - 1
             py = py / self.ss.H * 2 - 1
 
-        # pixel_coor = torch.stack( (px, py), dim=0 )
         pixel_coor = torch.cat( (px, py), dim=-2 )
 
         # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
-        valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
-        valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
+        # If normalized, require the coordinates to be in the range [-1, 1].
+        if normalized:
+            valid_mask_px = torch.logical_and(px < 1, px > -1)
+            valid_mask_py = torch.logical_and(py < 1, py > -1)
+        
+        # If not normalized, require the coordinates to be in the range [0, W] and [0, H].
+        else:
+            valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
+            valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
+
         valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
 
         # This is for the batched dimension.
