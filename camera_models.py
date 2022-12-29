@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import math
 import sys
+from colorama import Fore, Back, Style
 
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
@@ -80,6 +81,8 @@ class SensorModel(object):
         self._device = None
         self.in_to_tensor = in_to_tensor
         self.out_to_numpy = out_to_numpy
+
+        self._f = 1000.0 # Focal length.
     
     @staticmethod
     def make_shape_struct_from_repr(shape_struct):
@@ -412,6 +415,13 @@ class DoubleSphere(CameraModel):
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
 
+
+    def __str__(self) -> str:
+        return f'''DoubleSphereCameraModel
+        Shape  : {self.ss.shape}
+        FOV deg: {self.fov_degree}'''
+
+
 @register(CAMERA_MODELS)
 class Equirectangular(CameraModel):
     # def __init__(self, cx, cy, shape_struct, lon_shift=0, open_span=False, in_to_tensor=False, out_to_numpy=False):
@@ -483,7 +493,7 @@ class Equirectangular(CameraModel):
         self.set_members_by_shape_struct(new_shape_struct)
         self.ss = new_shape_struct
 
-    @SensorModel.f.getter
+    @CameraModel.f.getter
     def f(self):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()
@@ -804,8 +814,8 @@ class Pinhole(CameraModel):
     @SensorModel.device.setter
     def device(self, d):
         SensorModel.device.fset(self, d)
-        self.inv_intrinsics.to(device=d)
-        self.intrinsics.to(device=d)
+        self.inv_intrinsics = self.inv_intrinsics.to(device=d)
+        self.intrinsics = self.intrinsics.to(device=d)
 
     def pixel_2_ray(self, uv):
         '''
@@ -824,7 +834,7 @@ class Pinhole(CameraModel):
         uv = self.in_wrap(uv).to(dtype=torch.float32)
         
         # Convert to honmogeneous coordinates.
-        uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
+        uv1 = F.pad(uv, (0, 0, 0, 1), value=1.0)
 
         # Convert to camera-frame (metric).
 
@@ -838,9 +848,9 @@ class Pinhole(CameraModel):
         # The following if-statements match the dimensionality of batched inputs.
         # NOTE(yoraish): why should there be any??
         if len(uv.shape) == 2:
-            mask = torch.ones(uv.shape[1])
+            mask = torch.ones(uv.shape[1], device=uv.device)
         if len(uv.shape) == 3:
-            mask = torch.ones((uv.shape[0], uv.shape[2]))
+            mask = torch.ones((uv.shape[0], uv.shape[2]), device=uv.device)
         
         return self.out_wrap(xyz), \
                self.out_wrap(mask)
