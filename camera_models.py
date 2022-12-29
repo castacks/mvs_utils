@@ -853,9 +853,9 @@ class Pinhole(CameraModel):
         # The following if-statements match the dimensionality of batched inputs.
         # NOTE(yoraish): why should there be any??
         if len(uv.shape) == 2:
-            mask = torch.ones(uv.shape[1], device = uv.device)
+            mask = torch.ones(uv.shape[1], device = self.device)
         if len(uv.shape) == 3:
-            mask = torch.ones((uv.shape[0], uv.shape[2]), device = uv.device)
+            mask = torch.ones((uv.shape[0], uv.shape[2]), device = self.device)
         
         return self.out_wrap(xyz), \
                self.out_wrap(mask)
