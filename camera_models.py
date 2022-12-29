@@ -820,8 +820,8 @@ class Pinhole(CameraModel):
     @SensorModel.device.setter
     def device(self, d):
         SensorModel.device.fset(self, d)
-        self.inv_intrinsics.to(device=d)
-        self.intrinsics.to(device=d)
+        self.inv_intrinsics = self.inv_intrinsics.to(device=d)
+        self.intrinsics = self.intrinsics.to(device=d)
 
     def pixel_2_ray(self, uv):
         '''
@@ -843,7 +843,6 @@ class Pinhole(CameraModel):
         uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
 
         # Convert to camera-frame (metric).
-
         xyz = self.inv_intrinsics @ uv1
 
         # Normalize rays to be unit length.
