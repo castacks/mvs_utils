@@ -270,6 +270,13 @@ class CameraModel(SensorModel):
         resized.device = device
         
         return resized
+    
+    def get_valid_bounary(self, n_points=100):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+        raise NotImplementedError()
         
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
@@ -417,6 +424,31 @@ class DoubleSphere(CameraModel):
         valid_mask = valid_mask.squeeze(-2)
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+    
+    def get_valid_bounary(self, n_points=1000):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+        
+        # Unit length.
+        unit_length = torch.ones( (1, n_points), device=self.device, dtype=torch.float32 )
+        
+        # Find the x, y, z coordinates.
+        a_z = self.fov_rad / 2 # Angle w.r.t. the z-axis.
+        z = unit_length * math.cos( a_z )
+        
+        # Projection of the unit length onto the xy-plane.
+        r_xy = unit_length * math.sin( a_z )
+        a_x = torch.linspace( -LOCAL_PI, LOCAL_PI, n_points ) # Angle w.r.t. the x-axis.
+        x = r_xy * torch.cos( a_x )
+        y = r_xy * torch.sin( a_x )
+        
+        # Create an array of 3D points at the unit sphere along the FOV.
+        xyz = torch.cat( (x, y, z), dim=0 )
+        
+        pixel_coor, mask = self.point_3d_2_pixel(xyz)
+        return self.out_wrap(pixel_coor)
     
     def __str__(self) -> str:
         return \
