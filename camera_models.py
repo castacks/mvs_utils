@@ -156,6 +156,9 @@ class CameraModel(SensorModel):
         self.fov_rad = deg2rad( self.fov_degree )
         
         self.padding_mode_if_being_sampled = 'zeros'
+        
+        # Will be populated once get_valid_mask() is called for the first time.
+        self.valid_mask = None
 
     def _f(self):
         assert self.fx == self.fy
@@ -165,6 +168,14 @@ class CameraModel(SensorModel):
     def f(self):
         # _f() is here to be called by child classes.
         return self._f()
+
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        
+        if self.valid_mask is not None:
+            if isinstance(self.valid_mask, torch.Tensor):
+                self.valid_mask = self.valid_mask.to(device=d)
 
     def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
@@ -204,7 +215,7 @@ class CameraModel(SensorModel):
         If normalized is True, then the pixel coordinates are normalized to [-1, 1].
         '''
         xx, yy = self.pixel_meshgrid(shift=shift, normalized=normalized, skip_out_wrap=True, flatten=flatten)
-        return self.out_wrap( torch.stack( (xx, yy), dim=0 ).view((2, -1)).contiguous() )
+        return self.out_wrap( torch.stack( (xx, yy), dim=0 ).contiguous() )
 
     def pixel_2_ray(self, pixel_coor):
         '''
@@ -277,6 +288,22 @@ class CameraModel(SensorModel):
         The result array is ordered.
         '''
         raise NotImplementedError()
+    
+    def get_valid_mask(self, flatten=False, force_update=False):
+        # NOTE: Potential bug if force_update is False and flatten althers between two calls.
+        if self.valid_mask is not None and not force_update:
+            return self.valid_mask
+        
+        # Get the pixel coordinates of the pixel centers.
+        pixel_coordinates = self.pixel_coordinates( shift=0.5, normalized=False, flatten=True )
+        
+        # Get the valid mask.
+        _, valid_mask = self.pixel_2_ray( pixel_coordinates )
+        
+        if not flatten:
+            valid_mask = valid_mask.view( self.shape )
+            
+        return valid_mask
         
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
@@ -305,9 +332,9 @@ class DoubleSphere(CameraModel):
 
         return w1, w2
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         # Do nothing.
 
     def pixel_2_ray(self, pixel_coor):
@@ -542,9 +569,9 @@ class Equirectangular(CameraModel):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         
         self.longtitude_span = self.longitude_span.to(device=d)
         self.latitude_span   = self.latitude_span.to(device=d)
@@ -711,9 +738,9 @@ class Ocam(CameraModel):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()
     
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
     
         self.poly_coeff     = self.poly_coeff.to(device=d)
         self.inv_poly_coeff = self.inv_poly_coeff.to(device=d)
@@ -879,9 +906,9 @@ class Pinhole(CameraModel):
         super()._resize(new_shape_struct) # self.ss is updated.
         self.set_members_by_shape_struct(new_shape_struct)
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         self.inv_intrinsics.to(device=d)
         self.intrinsics.to(device=d)
 
@@ -1002,9 +1029,9 @@ class LiDAR(SensorModel):
         # 3D tensor. 2 x n_scanlines x n_points_per_scanline. In radians.
         self.az_el = None
     
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         
         self.R_sensor_lidar = self.R_sensor_lidar.to(device=self._device)
         self.az_el = self.az_el.to(device=self._device)
