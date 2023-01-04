@@ -6,8 +6,12 @@ import torch.nn.functional as F
 import math
 import sys
 
+from .debug import ( show_msg, show_obj, show_sum )
+
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
+
+from .compatible_torch import torch_meshgrid
 
 CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
@@ -152,6 +156,9 @@ class CameraModel(SensorModel):
         self.fov_rad = deg2rad( self.fov_degree )
         
         self.padding_mode_if_being_sampled = 'zeros'
+        
+        # Will be populated once get_valid_mask() is called for the first time.
+        self.valid_mask = None
 
     def _f(self):
         assert self.fx == self.fy
@@ -161,6 +168,14 @@ class CameraModel(SensorModel):
     def f(self):
         # _f() is here to be called by child classes.
         return self._f()
+
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        
+        if self.valid_mask is not None:
+            if isinstance(self.valid_mask, torch.Tensor):
+                self.valid_mask = self.valid_mask.to(device=d)
 
     def pixel_meshgrid(self, shift=0.5, normalized=False, skip_out_wrap=False, flatten=False):
         '''
@@ -174,7 +189,9 @@ class CameraModel(SensorModel):
         x = torch.arange(W, dtype=torch.float32, device=self._device) + shift
         y = torch.arange(H, dtype=torch.float32, device=self._device) + shift
         
-        xx, yy = torch.meshgrid(x, y, indexing='xy')
+        # Compatibility issue with Jetpack 4.6 where
+        # Python is 3.6, PyTorch is 1.8.
+        xx, yy = torch_meshgrid(x, y, indexing='xy')
         
         xx, yy = xx.contiguous(), yy.contiguous()
         
@@ -198,7 +215,7 @@ class CameraModel(SensorModel):
         If normalized is True, then the pixel coordinates are normalized to [-1, 1].
         '''
         xx, yy = self.pixel_meshgrid(shift=shift, normalized=normalized, skip_out_wrap=True, flatten=flatten)
-        return self.out_wrap( torch.stack( (xx, yy), dim=0 ).view((2, -1)).contiguous() )
+        return self.out_wrap( torch.stack( (xx, yy), dim=0 ).contiguous() )
 
     def pixel_2_ray(self, pixel_coor):
         '''
@@ -264,6 +281,29 @@ class CameraModel(SensorModel):
         resized.device = device
         
         return resized
+    
+    def get_valid_bounary(self, n_points=100):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+        raise NotImplementedError()
+    
+    def get_valid_mask(self, flatten=False, force_update=False):
+        # NOTE: Potential bug if force_update is False and flatten althers between two calls.
+        if self.valid_mask is not None and not force_update:
+            return self.valid_mask
+        
+        # Get the pixel coordinates of the pixel centers.
+        pixel_coordinates = self.pixel_coordinates( shift=0.5, normalized=False, flatten=True )
+        
+        # Get the valid mask.
+        _, valid_mask = self.pixel_2_ray( pixel_coordinates )
+        
+        if not flatten:
+            valid_mask = valid_mask.view( self.shape )
+            
+        return valid_mask
         
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
@@ -292,9 +332,9 @@ class DoubleSphere(CameraModel):
 
         return w1, w2
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         # Do nothing.
 
     def pixel_2_ray(self, pixel_coor):
@@ -412,6 +452,31 @@ class DoubleSphere(CameraModel):
 
         return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
     
+    def get_valid_bounary(self, n_points=1000):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+        
+        # Unit length.
+        unit_length = torch.ones( (1, n_points), device=self.device, dtype=torch.float32 )
+        
+        # Find the x, y, z coordinates.
+        a_z = self.fov_rad / 2 # Angle w.r.t. the z-axis.
+        z = unit_length * math.cos( a_z )
+        
+        # Projection of the unit length onto the xy-plane.
+        r_xy = unit_length * math.sin( a_z )
+        a_x = torch.linspace( -LOCAL_PI, LOCAL_PI, n_points ) # Angle w.r.t. the x-axis.
+        x = r_xy * torch.cos( a_x )
+        y = r_xy * torch.sin( a_x )
+        
+        # Create an array of 3D points at the unit sphere along the FOV.
+        xyz = torch.cat( (x, y, z), dim=0 )
+        
+        pixel_coor, mask = self.point_3d_2_pixel(xyz)
+        return self.out_wrap(pixel_coor)
+    
     def __str__(self) -> str:
         return \
 f'''{{
@@ -504,9 +569,9 @@ class Equirectangular(CameraModel):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         
         self.longtitude_span = self.longitude_span.to(device=d)
         self.latitude_span   = self.latitude_span.to(device=d)
@@ -580,8 +645,11 @@ class Equirectangular(CameraModel):
         
         point_3d = self.in_wrap(point_3d)
         
+        show_sum(point_3d=point_3d, point_3d_abs=torch.abs(point_3d))
+        
         # Input z and x coordinates.
         z_x_in = point_3d[ ..., [2, 0], : ]
+        show_msg(f'z_x_in.dtype = {z_x_in.dtype}')
         
         # Compute latitude.
         # r = torch.linalg.norm(point_3d, dim=-2)
@@ -598,6 +666,8 @@ class Equirectangular(CameraModel):
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
+        show_sum(r=r, lat=lat, lon=lon, lon_abs=torch.abs(lon), p_x=p_x, p_y=p_y)
+
         if normalized:
             # [-1, 1]
             p_y = p_y * 2 - 1
@@ -609,8 +679,27 @@ class Equirectangular(CameraModel):
             p_y = p_y * self.ss.H
             p_x = p_x * self.ss.W
         
+        show_sum(p_x=torch.abs(p_x), p_y=torch.abs(p_y))
+        
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
                self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
+
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "init_longitude_span": {self.init_longitude_span},
+    "init_latitude_span": {self.init_latitude_span}
+    "open_span": {self.open_span},
+    "lon_span_pixel": {self.lon_span_pixel},
+    "longitude_span": {self.longitude_span},
+    "latitude_span": {self.latitude_span},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "padding_mode_if_being_sampled": {self.padding_mode_if_being_sampled},
+    "shape_struct": {self.ss},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy} }}'''
 
 @register(CAMERA_MODELS)
 class Ocam(CameraModel):
@@ -649,9 +738,9 @@ class Ocam(CameraModel):
         print(f'Warning, the focal length of an {self.name} model has no meaning. ')
         return self._f()
     
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
     
         self.poly_coeff     = self.poly_coeff.to(device=d)
         self.inv_poly_coeff = self.inv_poly_coeff.to(device=d)
@@ -817,9 +906,9 @@ class Pinhole(CameraModel):
         super()._resize(new_shape_struct) # self.ss is updated.
         self.set_members_by_shape_struct(new_shape_struct)
 
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         self.inv_intrinsics = self.inv_intrinsics.to(device=d)
         self.intrinsics = self.intrinsics.to(device=d)
 
@@ -946,9 +1035,9 @@ class LiDAR(SensorModel):
         # 3D tensor. 2 x n_scanlines x n_points_per_scanline. In radians.
         self.az_el = None
     
-    @SensorModel.device.setter
+    @CameraModel.device.setter
     def device(self, d):
-        SensorModel.device.fset(self, d)
+        CameraModel.device.fset(self, d)
         
         self.R_sensor_lidar = self.R_sensor_lidar.to(device=self._device)
         self.az_el = self.az_el.to(device=self._device)
