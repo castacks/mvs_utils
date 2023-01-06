@@ -1,5 +1,6 @@
 
 import copy
+import numpy as np
 # from numpy import poly
 import torch
 import torch.nn.functional as F
@@ -1130,3 +1131,170 @@ class Velodyne(LiDAR):
         z = sin_E
         
         return FTensor( torch.stack( (x, y, z), dim=0 ).reshape( (3, -1) ), f0='lidar' )
+
+
+@register(CAMERA_MODELS)
+class LinearSphere(CameraModel):
+    def __init__(self, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        super(LinearSphere, self).__init__(
+            'LinearSphere', 
+            fx=shape_struct.W,
+            fy=shape_struct.H,
+            cx=shape_struct.W / 2,
+            cy=shape_struct.H / 2,
+            fov_degree= fov_degree, 
+            shape_struct= shape_struct, 
+            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        assert self.ss.H == self.ss.W, 'The shape of the linear camera model must be a square.'
+
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
+
+    def pixel_2_ray(self, pixel_coor):
+        '''
+        Arguments:
+        pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates.
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number.
+        
+        Returns:
+        ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        
+        pixel_coor = self.in_wrap(pixel_coor) # Bx2xN
+        
+        # mx and my becomes float64 if pixel_coor.dtype is integer type.
+        # Convert pixel to angle on the unit sphere.
+
+        mx = ( pixel_coor[..., 0, :] - self.ss.W / 2)
+        my = ( pixel_coor[..., 1, :] - self.ss.H / 2)
+        r = (mx**2.0 + my**2.0)**0.5
+
+        # Compute theta and phi. Theta is the angle of 3D points from the z-axis. Phi is the angle of 3D points from the x-axis on the x-y plane.
+        th = torch.atan2( my, mx )
+        ph = r * self.fov_rad / self.ss.W
+
+        # Valid rays are only those within the field of view.
+        valid_mask = torch.abs(ph) <= self.fov_rad / 2.0
+
+        # Compute the 3D points. Those are of unit length.
+        x = torch.sin(ph) * torch.cos(th)
+        y = torch.sin(ph) * torch.sin(th)
+        z = torch.cos(ph)
+
+        # Need to deal with batch dim
+        ray = torch.stack( (x, y, z), dim=-2 )
+
+        return self.out_wrap(ray), self.out_wrap(valid_mask)
+
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
+        
+        Returns: 
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BXN if batched.
+        '''
+
+        point_3d = self.in_wrap(point_3d)
+
+        # torch.split results in Bx1XN.
+        x, y, z = torch.split( point_3d, 1, dim=-2 )
+
+        x2 = x**2.0 # Note: this may promote x2 to torch.float64 if point_3d.dtype=torch.int. 
+        y2 = y**2.0
+        z2 = z**2.0
+
+        # Magnitude of the 3D point.
+        R = (x2 + y2 + z2)**0.5
+
+        # Theta (th) is the angle between the ray and the z-axis.
+        # Phi (ph) is the angle between the ray and the x-axis, in the x-y plane.
+        ph = torch.acos( z / R )
+        th = torch.atan2( y, x )
+
+
+        # The radius in the image plane.
+        r = ph * self.ss.W / self.fov_rad
+
+        # The pixel coordinates.
+        # If any are FTensors, then convert to Tensor.
+        if isinstance(th, FTensor):
+            th = th.tensor()
+            ph = ph.tensor()
+
+
+        u = r * torch.cos(th) + self.ss.W / 2
+        v = r * torch.sin(th) + self.ss.H / 2
+
+        # Mask out the invalid pixels.
+        valid_mask = (u >= 0) & (u < self.ss.W) & (v >= 0) & (v < self.ss.H)
+        
+        # Pixel coordinates.
+        if normalized:
+            u = u / self.ss.W * 2 - 1
+            v = v / self.ss.H * 2 - 1
+
+        pixel_coor = torch.cat( (u, v), dim=-2 )
+
+        # Filter by FOV.
+        a = x2y2z_2_z_angle( x2, y2, z )
+        valid_mask = torch.logical_and(
+            valid_mask, 
+            a <= self.fov_rad / 2.0
+        )
+        
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+    
+    def get_valid_bounary(self, n_points=1000):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+        
+        # Unit length.
+        unit_length = torch.ones( (1, n_points), device=self.device, dtype=torch.float32 )
+        
+        # Find the x, y, z coordinates.
+        a_z = self.fov_rad / 2 # Angle w.r.t. the z-axis.
+        z = unit_length * math.cos( a_z )
+        
+        # Projection of the unit length onto the xy-plane.
+        r_xy = unit_length * math.sin( a_z )
+        a_x = torch.linspace( -LOCAL_PI, LOCAL_PI, n_points ) # Angle w.r.t. the x-axis.
+        x = r_xy * torch.cos( a_x )
+        y = r_xy * torch.sin( a_x )
+        
+        # Create an array of 3D points at the unit sphere along the FOV.
+        xyz = torch.cat( (x, y, z), dim=0 )
+        
+        pixel_coor, mask = self.point_3d_2_pixel(xyz)
+        return self.out_wrap(pixel_coor)
+    
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "xi": {self.xi},
+    "alpha": {self.alpha},
+    "fx": {self.fx},
+    "fy": {self.fy},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "fov_degree": {self.fov_degree},
+    "shape_struct": {self.ss},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy}
+}}'''
