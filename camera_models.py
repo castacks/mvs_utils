@@ -1,7 +1,5 @@
 
 import copy
-import numpy as np
-# from numpy import poly
 import torch
 import torch.nn.functional as F
 import math
@@ -416,6 +414,12 @@ class DoubleSphere(CameraModel):
 
         # torch.split results in Bx1XN.
         x, y, z = torch.split( point_3d, 1, dim=-2 )
+
+        # If Ftensor convert to Tensor.
+        if isinstance(x, torch.Tensor):
+            x = x.tensor()
+            y = y.tensor()
+            z = z.tensor()
 
         x2 = x**2.0 # Note: this may promote x2 to torch.float64 if point_3d.dtype=torch.int. 
         y2 = y**2.0
@@ -1287,12 +1291,6 @@ class LinearSphere(CameraModel):
         return \
 f'''{{
     "type": "{self.__class__.__name__}",
-    "xi": {self.xi},
-    "alpha": {self.alpha},
-    "fx": {self.fx},
-    "fy": {self.fy},
-    "cx": {self.cx},
-    "cy": {self.cy},
     "fov_degree": {self.fov_degree},
     "shape_struct": {self.ss},
     "in_to_tensor": {self.in_to_tensor},
