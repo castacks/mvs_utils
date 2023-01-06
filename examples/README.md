@@ -18,3 +18,7 @@ $ git submodule update --init --recursive
 $ cd ../..
 $ python3 -m image_resampling.mvs_utils.examples.linear_fisheye_camera_model
 ```
+
+The output of this script should look like this:
+
+![linear_fisheye_camera_model.py output](data/media/linear_sphere_and_double_sphere.png)
