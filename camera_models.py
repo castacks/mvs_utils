@@ -416,7 +416,7 @@ class DoubleSphere(CameraModel):
         x, y, z = torch.split( point_3d, 1, dim=-2 )
 
         # If Ftensor convert to Tensor.
-        if isinstance(x, torch.Tensor):
+        if isinstance(x, FTensor):
             x = x.tensor()
             y = y.tensor()
             z = z.tensor()
@@ -1250,12 +1250,6 @@ class LinearSphere(CameraModel):
 
         pixel_coor = torch.cat( (u, v), dim=-2 )
 
-        # Filter by FOV.
-        a = x2y2z_2_z_angle( x2, y2, z )
-        valid_mask = torch.logical_and(
-            valid_mask, 
-            a <= self.fov_rad / 2.0
-        )
         
         # This is for the batched dimension.
         valid_mask = valid_mask.squeeze(-2)

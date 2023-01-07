@@ -24,13 +24,21 @@ img_dict = {k: plt.imread(v) for k, v in img_gps.items()}
 fish_model = DoubleSphere(
     xi = -0.2, 
     alpha = 0.6, 
-    fx = 250, 
-    fy = 250, 
+    fx = 235, 
+    fy = 235, 
     cx = 500, 
     cy = 500, 
     fov_degree = 195, 
     shape_struct = ShapeStruct(1000, 1000)
 )
+
+pinhole_model = Pinhole(
+    fx = 235,
+    fy = 235,
+    cx = 250,
+    cy = 250,
+    shape_struct = ShapeStruct(500, 500)
+    )
 
 six_image_sampler = SixPlanarTorch(195, fish_model, R_raw_fisheye= torch.eye(3))
 fish_img, _ = six_image_sampler(img_dict)
@@ -119,3 +127,38 @@ print(Fore.GREEN + "Proj pix shape: {}".format(pix.shape) + Style.RESET_ALL)
 
 # Get rays.
 
+
+
+######################333
+
+
+
+# Create a sampler.
+pinhole_model_sampler = CameraModelRotation(linear_model, pinhole_model, R_raw_fisheye= torch.eye(3))
+pinhole_model_sampler.device = 'cuda'
+# Sample the image.
+resampled, _ = pinhole_model_sampler(linear_img)
+
+pinhole_model_sampler2 = CameraModelRotation(fish_model, pinhole_model, R_raw_fisheye= torch.eye(3))
+pinhole_model_sampler2.device = 'cuda'
+# Sample the image.
+resampled2, _ = pinhole_model_sampler2(fish_img)
+
+# Plot the images.
+fig, ax = plt.subplots(3, 2)
+ax[0, 0].imshow(linear_img)
+ax[0, 0].set_title("LinearSphere")
+ax[0, 1].imshow(resampled)
+ax[0, 1].set_title("Resampled")
+
+ax[1, 0].imshow(fish_img)  
+ax[1, 0].set_title("DoubleSphere")
+ax[1, 1].imshow(resampled2)
+ax[1, 1].set_title("Resampled")
+
+# Error of the images.
+ax[2, 1].imshow(resampled - resampled2)
+ax[2, 1].set_title("Resampled - Resampled2, Error is {}".format(np.mean(np.abs(resampled - resampled2))))
+
+
+plt.show()
