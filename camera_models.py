@@ -887,11 +887,10 @@ class PinholeRadTan(CameraModel):
         self.intrinsics.to(device=d)
     
 
-    def distort(self,y,jacobian=True):
+    def distort(self,y_input,jacobian=True):
         
+        y = y_input.clone()
         y = self.in_wrap(y).to(dtype=torch.float32)
-        n_points = y.shape[1]
-        J = torch.zeros((2,2,n_points)).to(dtype=torch.float32, device=self._device)
 
         mx2_u = y[0] * y[0]
         my2_u = y[1] * y[1]
@@ -899,6 +898,12 @@ class PinholeRadTan(CameraModel):
         rho2_u = mx2_u + my2_u
 
         rad_dist_u = self.k1 * rho2_u + self.k2 * rho2_u * rho2_u
+        if len(y.shape) > 1:
+            n_points = y.shape[1]
+        else:
+            n_points = 1 
+
+        J = torch.zeros((2,2,n_points)).to(dtype=torch.float32, device=self._device)
 
         if jacobian:
             J[0,0] = 1 + rad_dist_u + self.k1 * 2.0 * mx2_u + self.k2 * rho2_u * 4 * mx2_u + 2.0 * self.p1 * y[1] + 6 * self.p2 * y[0]
@@ -910,9 +915,9 @@ class PinholeRadTan(CameraModel):
         y[1] += y[1] * rad_dist_u + 2.0 * self.p2 * mxy_u + self.p1 * (rho2_u + 2.0 * my2_u)
 
         return y, J
-    
-    def undistort(self,y,homogeneous = False):
 
+
+    def undistort_single(self,y,homogeneous = False,debug=False):
         n = 5
         y_tmp = None
         ybar = y.clone()
@@ -920,18 +925,53 @@ class PinholeRadTan(CameraModel):
         for i in range(n):
             y_tmp = ybar.clone()
             y_tmp, F = self.distort(y_tmp)
-            F = torch.swapaxes(F,-1,0)
-            F_block = torch.block_diag(*F).to(dtype=torch.float32, device=self._device)
-
-            e = y - y_tmp
-            du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
             
+            F = torch.squeeze(F)
+            
+            e = y - y_tmp
+
+            du = torch.linalg.inv(F.T @ F) @ F.T @ e
             ybar += du
+
             if (e.dot(e) < 1e-15):
                 break
         
         if homogeneous:
             ybar = torch.tensor([ybar[0],ybar[1],1.0]).to(dtype=torch.float32, device=self._device)
+
+        return ybar
+    
+    def undistort(self,y,homogeneous = False,debug=False):
+
+        n = 5
+        y_tmp = None
+        ybar = y.clone()
+        for i in range(n):
+            y_tmp = ybar.clone()
+            y_tmp, F = self.distort(y_tmp)
+
+            F = torch.swapaxes(F,-1,0)
+            F_block = torch.block_diag(*F).to(dtype=torch.float32, device=self._device)
+
+            e = y - y_tmp
+            e_flat = torch.zeros((e.shape[1]*2,1)).to(dtype=torch.float32, device=self._device)
+            e_flat[::2] = e[0].reshape((-1,1))
+            e_flat[1 :: 2] = e[1].reshape((-1,1))
+
+            e = e_flat
+
+            du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
+            
+            ybar[0] += du[::2].flatten()
+            ybar[1] += du[1::2].flatten()
+
+            if debug:
+                print("Iteration {0}, loss: {1}".format(i,torch.linalg.norm(e)))
+                if (torch.linalg.norm(e) < 1e-15):
+                    break
+            
+        if homogeneous:
+            ybar = torch.cat((ybar,torch.ones_like(ybar[0]).reshape((1,-1))),dim=0)
 
         return ybar
 
@@ -957,6 +997,7 @@ class PinholeRadTan(CameraModel):
         return y_bar
     
     def unnormalize_point(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
         if homogeneous:
             y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy,1.0]).to(dtype=torch.float32, device=self._device)
         else:
@@ -996,7 +1037,26 @@ class PinholeRadTan(CameraModel):
         N = uv.shape[1]
         xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
 
-        xyz = self.undistort(self.normalize_points(uv),homogeneous=True)
+        batch_size = 500 
+
+        for start_batch_idx in torch.arange(0,N,batch_size):
+            end_batch = min(start_batch_idx+batch_size,N)
+
+            xyz[:,start_batch_idx:end_batch] = self.undistort(self.normalize_points(uv[:,start_batch_idx:end_batch]),homogeneous=True,debug=False)
+
+
+        # xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
+        # for i in range(N):
+        #     debug = False
+        #     if i == 0:
+        #         debug = True
+
+        #     xyz[:,i] = self.undistort_single(self.normalize_point(uv[:,i]),homogeneous=True,debug=debug)
+        
+
+        # print("Single")
+        # print(xyz[:,:4])
+
 
         # Convert to honmogeneous coordinates.
         # uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
@@ -1041,7 +1101,14 @@ class PinholeRadTan(CameraModel):
         # for i in range(N):
         point_3d = torch.div(point_3d,point_3d[-1,:])
         
-        point_3d = self.unnormalize_points(self.distort(point_3d,jacobian=True)[0],homogeneous=True)
+        point_3d = self.unnormalize_points(self.distort(point_3d,jacobian=False)[0],homogeneous=True)
+
+        # _, Js_parallel = self.distort(point_3d,jacobian=True)
+
+
+        # for i in range(N):
+        #     point_tmp, J = self.distort(torch.tensor([point_3d[0,i],point_3d[1,i]]),jacobian=True)
+        #     point_3d[:,i] = self.unnormalize_point(point_tmp,homogeneous=True)
 
         # print(point_3d.shape)
         uv = point_3d
