@@ -12,6 +12,11 @@ import numba
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
 from multiprocessing import Pool
+from scipy.sparse import csc_matrix
+from scipy.sparse.linalg import inv
+import time 
+
+pinholeradtan_solver = 'torch'
 
 CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
@@ -946,6 +951,7 @@ class PinholeRadTan(CameraModel):
         n = 5
         y_tmp = None
         ybar = y.clone()
+
         for i in range(n):
             y_tmp = ybar.clone()
             y_tmp, F = self.distort(y_tmp)
@@ -953,14 +959,25 @@ class PinholeRadTan(CameraModel):
             F = torch.swapaxes(F,-1,0)
             F_block = torch.block_diag(*F).to(dtype=torch.float32, device=self._device)
 
+            # to scipy
+            if pinholeradtan_solver == 'scipy':
+                F_block = csc_matrix(F_block.cpu().numpy())
+
             e = y - y_tmp
             e_flat = torch.zeros((e.shape[1]*2,1)).to(dtype=torch.float32, device=self._device)
             e_flat[::2] = e[0].reshape((-1,1))
             e_flat[1 :: 2] = e[1].reshape((-1,1))
 
             e = e_flat
+            if pinholeradtan_solver == 'scipy':
+                e = csc_matrix(e.cpu().numpy())
 
-            du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
+            if pinholeradtan_solver == 'scipy':
+                du = inv(F_block.T @ F_block) @ F_block.T @ e
+                du = torch.tensor(du.toarray()).to(dtype=torch.float32, device=self._device)
+            else:
+                du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
+            #
             
             ybar[0] += du[::2].flatten()
             ybar[1] += du[1::2].flatten()
@@ -1037,14 +1054,16 @@ class PinholeRadTan(CameraModel):
         N = uv.shape[1]
         xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
 
-        batch_size = 500 
+        batch_size = 1000
 
+        time_start = time.time()
+        print("Started calculations for pinhole-radtan.. Might take a couple minutes.")
         for start_batch_idx in torch.arange(0,N,batch_size):
             end_batch = min(start_batch_idx+batch_size,N)
 
             xyz[:,start_batch_idx:end_batch] = self.undistort(self.normalize_points(uv[:,start_batch_idx:end_batch]),homogeneous=True,debug=False)
 
-
+        print("Elapsed time: {0}, for {1} images.".format(time.time()-time_start,N))
         # xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
         # for i in range(N):
         #     debug = False
