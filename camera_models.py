@@ -15,6 +15,7 @@ from multiprocessing import Pool
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import inv
 import time 
+from tqdm import tqdm
 
 pinholeradtan_solver = 'torch'
 
@@ -1058,7 +1059,7 @@ class PinholeRadTan(CameraModel):
 
         time_start = time.time()
         print("Started calculations for pinhole-radtan.. Might take a couple minutes.")
-        for start_batch_idx in torch.arange(0,N,batch_size):
+        for start_batch_idx in tqdm(torch.arange(0,N,batch_size)):
             end_batch = min(start_batch_idx+batch_size,N)
 
             xyz[:,start_batch_idx:end_batch] = self.undistort(self.normalize_points(uv[:,start_batch_idx:end_batch]),homogeneous=True,debug=False)
