@@ -5,9 +5,13 @@ import torch
 import torch.nn.functional as F
 import math
 import sys
+from numba import jit, prange
+from numba.experimental import jitclass
+import numba 
 
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
+from multiprocessing import Pool
 
 CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
@@ -836,6 +840,10 @@ class Pinhole(CameraModel):
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
 
+spec = [
+    ('value', numba.int32),               # a simple scalar field
+    ('array', numba.float32[:]),          # an array field
+]
 @register(CAMERA_MODELS)
 class PinholeRadTan(CameraModel):
     def __init__(self, fx, fy, cx, cy, k1, k2, p1, p2, shape_struct, in_to_tensor=False, out_to_numpy=False,device='cpu'):
@@ -845,7 +853,6 @@ class PinholeRadTan(CameraModel):
         fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
         
         super().__init__('PinholeRadTan', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy,device=device)
-
 
         self.k1 = k1
         self.k2 = k2 
@@ -880,10 +887,11 @@ class PinholeRadTan(CameraModel):
         self.intrinsics.to(device=d)
     
 
-    def distort(self,y):
+    def distort(self,y,jacobian=True):
         
         y = self.in_wrap(y).to(dtype=torch.float32)
-        J = torch.zeros((2,2)).to(dtype=torch.float32, device=self._device)
+        n_points = y.shape[1]
+        J = torch.zeros((2,2,n_points)).to(dtype=torch.float32, device=self._device)
 
         mx2_u = y[0] * y[0]
         my2_u = y[1] * y[1]
@@ -892,10 +900,11 @@ class PinholeRadTan(CameraModel):
 
         rad_dist_u = self.k1 * rho2_u + self.k2 * rho2_u * rho2_u
 
-        J[0,0] = 1 + rad_dist_u + self.k1 * 2.0 * mx2_u + self.k2 * rho2_u * 4 * mx2_u + 2.0 * self.p1 * y[1] + 6 * self.p2 * y[0]
-        J[1, 0] = self.k1 * 2.0 * y[0] * y[1] + self.k2 * 4 * rho2_u * y[0] * y[1]  + self.p1 * 2.0 * y[0] + 2.0 * self.p2 * y[1]
-        J[0, 1] = J[1, 0]
-        J[1, 1] = 1 + rad_dist_u + self.k1 * 2.0 * my2_u + self.k2 * rho2_u * 4 * my2_u + 6 * self.p1 * y[1] + 2.0 * self.p2 * y[0]
+        if jacobian:
+            J[0,0] = 1 + rad_dist_u + self.k1 * 2.0 * mx2_u + self.k2 * rho2_u * 4 * mx2_u + 2.0 * self.p1 * y[1] + 6 * self.p2 * y[0]
+            J[1, 0] = self.k1 * 2.0 * y[0] * y[1] + self.k2 * 4 * rho2_u * y[0] * y[1]  + self.p1 * 2.0 * y[0] + 2.0 * self.p2 * y[1]
+            J[0, 1] = J[1, 0]
+            J[1, 1] = 1 + rad_dist_u + self.k1 * 2.0 * my2_u + self.k2 * rho2_u * 4 * my2_u + 6 * self.p1 * y[1] + 2.0 * self.p2 * y[0]
 
         y[0] += y[0] * rad_dist_u + 2.0 * self.p1 * mxy_u + self.p2 * (rho2_u + 2.0 * mx2_u)
         y[1] += y[1] * rad_dist_u + 2.0 * self.p2 * mxy_u + self.p1 * (rho2_u + 2.0 * my2_u)
@@ -911,8 +920,11 @@ class PinholeRadTan(CameraModel):
         for i in range(n):
             y_tmp = ybar.clone()
             y_tmp, F = self.distort(y_tmp)
+            F = torch.swapaxes(F,-1,0)
+            F_block = torch.block_diag(*F).to(dtype=torch.float32, device=self._device)
+
             e = y - y_tmp
-            du = torch.linalg.inv(F.T @ F) @ F.T @ e
+            du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
             
             ybar += du
             if (e.dot(e) < 1e-15):
@@ -931,11 +943,37 @@ class PinholeRadTan(CameraModel):
             y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy]).to(dtype=torch.float32, device=self._device)
         return y_bar
     
+    def normalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = (y[0]-self.cx)/self.fx
+        y_bar[1] = (y[1]-self.cy)/self.fy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
+        return y_bar
+    
     def unnormalize_point(self,y,homogeneous=False):
         if homogeneous:
             y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy,1.0]).to(dtype=torch.float32, device=self._device)
         else:
             y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def unnormalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = y[0]*self.fx+self.cx
+        y_bar[1] = y[1]*self.fy+self.cy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
         return y_bar
 
     def pixel_2_ray(self, uv):
@@ -957,8 +995,8 @@ class PinholeRadTan(CameraModel):
         # can we remove the for loop? Not sure, this is how Kalibr does it
         N = uv.shape[1]
         xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
-        for i in range(N):
-            xyz[:,i] = self.undistort(self.normalize_point(uv[:,i]),homogeneous=True)
+
+        xyz = self.undistort(self.normalize_points(uv),homogeneous=True)
 
         # Convert to honmogeneous coordinates.
         # uv1 = F.pad(uv, (0, 0, 0, 1), value=1)
@@ -981,7 +1019,7 @@ class PinholeRadTan(CameraModel):
         
         return self.out_wrap(xyz), \
                self.out_wrap(mask)
-        
+    
     def point_3d_2_pixel(self, point_3d, normalized=False):
         '''
         Arguments:
@@ -1000,9 +1038,12 @@ class PinholeRadTan(CameraModel):
 
         # can we remove the for loop? Not sure, this is how Kalibr does it
         N = point_3d.shape[1]
-        for i in range(N):
-            point_3d[:,i] = self.unnormalize_point(self.distort(torch.tensor([point_3d[0,i]/point_3d[-1,i],point_3d[1,i]/point_3d[-1,i]]))[0],homogeneous=True)
+        # for i in range(N):
+        point_3d = torch.div(point_3d,point_3d[-1,:])
+        
+        point_3d = self.unnormalize_points(self.distort(point_3d,jacobian=True)[0],homogeneous=True)
 
+        # print(point_3d.shape)
         uv = point_3d
         # Pixel coordinates projected from the world points. 
         # uv_unnormalized = self.intrinsics @ point_3d
@@ -1012,8 +1053,6 @@ class PinholeRadTan(CameraModel):
 
         # Warp to desired datatype.
         uv = self.in_wrap(uv).to(dtype=torch.float32)
-
-
 
         # Do torch.split results in Bx1XN.
         px, py, _ = torch.split( uv, 1, dim=-2 )
