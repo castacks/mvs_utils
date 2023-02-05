@@ -5,9 +5,6 @@ import torch
 import torch.nn.functional as F
 import math
 import sys
-from numba import jit, prange
-from numba.experimental import jitclass
-import numba 
 
 from .ftensor import ( FTensor, f_eye )
 from .shape_struct import ShapeStruct
@@ -846,11 +843,6 @@ class Pinhole(CameraModel):
         return f'''Pinhole
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
-
-spec = [
-    ('value', numba.int32),               # a simple scalar field
-    ('array', numba.float32[:]),          # an array field
-]
 
 @register(CAMERA_MODELS)
 class PinholeRadTan(CameraModel):
