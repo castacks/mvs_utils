@@ -602,9 +602,8 @@ class Equirectangular(CameraModel):
 
     def pixel_2_ray(self, pixel_coor):
         '''
-        Assuming cx and cy is the center coordinates of the image. 
-        Thus, the image shape is [ 2*cy + 1, 2*cx + 1 ]
-        
+        This function assumes that all coordinates in pixel_coor are valid.
+
         Arguments:
         pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates. 
         
@@ -618,9 +617,6 @@ class Equirectangular(CameraModel):
         
         pixel_coor = self.in_wrap(pixel_coor)
         
-        # pixel_space_center = \
-        #     torch.Tensor([ self.cx, self.cy ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
-        
         pixel_space_shape = \
             torch.Tensor([ self.ss.W, self.ss.H ]).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
 
@@ -632,9 +628,6 @@ class Equirectangular(CameraModel):
         ).to(dtype=torch.float32, device=pixel_coor.device).view((2, 1))
         
         # lon_lat.dtype becomes torch.float64 if pixel_coor.dtype=torch.int.
-        # TODO: Potential bug if pixel_space_center is not at the center of image.
-        # lon_lat = pixel_coor / ( 2 * pixel_space_center ) * angle_span + angle_start
-        # lon_lat = pixel_coor / ( pixel_space_shape - 1 ) * angle_span + angle_start # This is before changing the pixel coordinate definiton.
         lon_lat = pixel_coor / pixel_space_shape * angle_span + angle_start
         
         # Bx1xN after calling torch.split.
@@ -645,9 +638,6 @@ class Equirectangular(CameraModel):
         x = c * torch.sin(longitute)
         y =     torch.sin(latitute)
         z = c * torch.cos(longitute)
-        
-        # return self.out_wrap( torch.stack( (x, y, z), dim=0 )   ), \
-        #        self.out_wrap( torch.ones_like(x).to(torch.bool) )
                
         return self.out_wrap( torch.cat( (x, y, z), dim=-2 )   ), \
                self.out_wrap( torch.ones_like(x.squeeze(-2)).to(torch.bool) )
@@ -675,15 +665,11 @@ class Equirectangular(CameraModel):
         show_msg(f'z_x_in.dtype = {z_x_in.dtype}')
         
         # Compute latitude.
-        # r = torch.linalg.norm(point_3d, dim=-2)
-        # lat = torch.asin(point_3d[..., 1, :] / r)
         r   = torch.linalg.norm( z_x_in, dim=-2 )
         lat = torch.atan2( point_3d[..., 1, :], r )
         
         # Compute longitude.
-        # z_x = self.R_ori_shifted @ point_3d[ ..., [2, 0], : ]
-        z_x = z_x_in
-        lon = torch.atan2( z_x[..., 1, :], z_x[..., 0, :] )
+        lon = torch.atan2( z_x_in[..., 1, :], z_x_in[..., 0, :] )
         
         latitude_range = self.latitude_span[1] - self.latitude_span[0]
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
@@ -691,21 +677,20 @@ class Equirectangular(CameraModel):
 
         show_sum(r=r, lat=lat, lon=lon, lon_abs=torch.abs(lon), p_x=p_x, p_y=p_y)
 
+        valid_mask = (p_x >= 0) & (p_x <= 1) & (p_y >= 0) & (p_y <= 1)
+
         if normalized:
             # [-1, 1]
             p_y = p_y * 2 - 1
             p_x = p_x * 2 - 1
         else:
-            # p_y = p_y * ( self.ss.H - 1 )
-            # p_x = p_x * ( self.ss.W - 1 )
-            # After changing the pixel coordinate definiton.
             p_y = p_y * self.ss.H
             p_x = p_x * self.ss.W
         
         show_sum(p_x=torch.abs(p_x), p_y=torch.abs(p_y))
         
         return self.out_wrap( torch.stack( (p_x, p_y), dim=-2 ) ), \
-               self.out_wrap( torch.ones_like(p_x).to(torch.bool) )
+               self.out_wrap( valid_mask )
 
     def __str__(self) -> str:
         return \
