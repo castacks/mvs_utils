@@ -71,7 +71,7 @@ class MetadataReader(object):
                 path=rig_out_dir,
                 types=self.metadata["rig_img_types"],
                 is_rig=True,
-                data=dict(frame="rbf")
+                data=dict(frame="rbf", image_frame="rif")
             )
 
             #Initialize camera headers and the rig_is_cam flag. The rig_is_cam flag is used if 
