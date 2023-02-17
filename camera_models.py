@@ -7,10 +7,10 @@ import sys
 
 from .debug import ( show_msg, show_obj, show_sum )
 
-from .ftensor import ( FTensor, f_eye )
-from .shape_struct import ShapeStruct
-
 from .compatible_torch import torch_meshgrid
+from .ftensor import ( FTensor, f_eye )
+from .radian import ( check_valid_range, shift_according_2_range, check_in_range )
+from .shape_struct import ShapeStruct
 
 CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
@@ -558,9 +558,8 @@ class Equirectangular(CameraModel):
         # Full longitude span is [-pi, pi], with possible shift or crop.
         # Full latitude span is [-pi/2, pi/2], with possible crop. No shift.
         # The actual longitude span that all the pixels cover.
-        self.lon_span_pixel = self.init_longitude_span[1] - self.init_longitude_span[0]
-        assert self.lon_span_pixel <= 2 * LOCAL_PI, \
-            f'logintude_span is over 2pi: {self.init_longitude_span}, longitude_span[1] - longitude_span[0] = {self.lon_span_pixel}. '
+        check_valid_range( *self.init_longitude_span, raise_exception=True )
+        self.lon_span_pixel = self.init_longitude_span[1] - self.init_longitude_span[0]        
         
         # open_span is True means the last column of pixels do not have the same longitude angle as the first column.
         if self.open_span:
@@ -673,6 +672,8 @@ class Equirectangular(CameraModel):
         
         latitude_range = self.latitude_span[1] - self.latitude_span[0]
         p_y = ( lat - self.latitude_span[0] ) / latitude_range # [ 0, 1 ]
+        # Need special treatment for the longitude.
+        lon = shift_according_2_range(*self.longitude_span, lon)
         p_x = ( lon - self.longitude_span[0] ) / self.lon_span_pixel # [ 0, 1 ], closed span
 
         show_sum(r=r, lat=lat, lon=lon, lon_abs=torch.abs(lon), p_x=p_x, p_y=p_y)
