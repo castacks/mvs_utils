@@ -1140,6 +1140,8 @@ class Velodyne(LiDAR):
 @register(CAMERA_MODELS)
 class LinearSphere(CameraModel):
     def __init__(self, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        shape_struct = SensorModel.make_shape_struct_from_repr(shape_struct)
+
         super(LinearSphere, self).__init__(
             'LinearSphere', 
             fx=shape_struct.W,
