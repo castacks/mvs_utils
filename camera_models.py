@@ -884,13 +884,14 @@ class Ocam(CameraModel):
     
 @register(CAMERA_MODELS)
 class Pinhole(CameraModel):
-    def __init__(self, fx, fy, cx, cy, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, fx, fy, cx, cy, shape_struct, 
+        in_to_tensor=False, out_to_numpy=False, name='Pinhole'):
         
         # Compute the FoV from the specified parameters.
         shape_struct = SensorModel.make_shape_struct_from_repr(shape_struct)
         fov_degree = 2 * math.atan2(shape_struct.W, 2 * fx) * 180.0 / LOCAL_PI
         
-        super().__init__('Pinhole', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__(name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.set_members_by_shape_struct(shape_struct)
 
@@ -1012,7 +1013,7 @@ class Pinhole(CameraModel):
         
     
     def __repr__(self) -> str:
-        return f'''An instance of Pinhole CameraModel
+        return f'''An instance of {self.name} camera model
         Height : {self.ss.shape[0]}
         Width : {self.ss.shape[1]}
         fx : {self.fx}
@@ -1023,9 +1024,19 @@ class Pinhole(CameraModel):
         device: {self._device}'''
 
     def __str__(self) -> str:
-        return f'''Pinhole
+        return f'''{self.name}
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
+@register(CAMERA_MODELS)
+class SquarePinhole(Pinhole):
+    def __init__(self, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        shape_struct = ShapeStruct.read_shape_struct(shape_struct)
+        assert shape_struct.W == shape_struct.H, \
+            f'SquarePinhole camera model requires square image shape. Got {shape_struct}. ' 
+        f = shape_struct.W / 2
+        super().__init__(fx=f, fy=f, cx=f, cy=f, shape_struct=shape_struct, 
+            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy, name='SquarePinhole')
 
 class LiDAR(SensorModel):
     def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
