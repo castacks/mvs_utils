@@ -20,7 +20,7 @@ class Depth2Distance(object):
     @device.setter
     def device(self, d):
         self.camera_model.device = d
-        self.pixel_coords = self.pixel_coords.to(d)
+        self.pixel_coords = self.pixel_coords.to(device=d)
         self._device = d
 
     def __call__(self, z):
@@ -35,8 +35,6 @@ class Depth2Distance(object):
             raise TypeError(f'z must be a NumPy array or PyTorch tensor, but got {type(z)}. ')
         
         z = z.to(device=self.device).squeeze(0)
-        
-        xyz = self.xyz.detach().clone()
 
         u = self.pixel_coords[0, :, :]
         v = self.pixel_coords[1, :, :]
@@ -46,10 +44,10 @@ class Depth2Distance(object):
         cx = self.camera_model.cx
         cy = self.camera_model.cy
 
-        xyz[0, :, :] = (z / fx) * (u - cx)
-        xyz[1, :, :] = (z / fy) * (v - cy)
-        xyz[2, :, :] = z
+        self.xyz[0, :, :] = (z / fx) * (u - cx)
+        self.xyz[1, :, :] = (z / fy) * (v - cy)
+        self.xyz[2, :, :] = z
 
-        distance = torch.norm(xyz, dim=0)
+        distance = torch.norm(self.xyz, dim=0)
 
         return distance.cpu().numpy()
