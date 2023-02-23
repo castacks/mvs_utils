@@ -4,7 +4,10 @@ from .image_read import (
     read_image, 
     read_image_gray, 
     read_mask,
-    read_compressed_float )
+    read_compressed_float,
+    read_six_image,
+    read_compressed_float_siximg,
+    siximg_arr_to_imgdict )
 from .image_write import (
     write_image, 
     write_float_image_normalized, 
