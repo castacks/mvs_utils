@@ -11,7 +11,7 @@ class Depth2Distance(object):
         self.pixel_coords = self.camera_model.pixel_coordinates()
 
         self.xyz = torch.zeros( 
-                ( 3, *self.pixel_coords.shape[:2] ), device=self._device, dtype=torch.float32 )
+                ( 3, *self.pixel_coords.shape[1:3] ), device=self._device, dtype=torch.float32 )
         
     @property
     def device(self):

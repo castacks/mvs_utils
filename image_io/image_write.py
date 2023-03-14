@@ -17,12 +17,6 @@ def write_float_image_normalized(fn, img):
     img: A single channel image.
     Only supports writing PNG image.
     """
-
-    # Test the output directory.
-    parts = get_filename_parts(fn)
-
-    if ( not os.path.isdir(parts[0]) ):
-        os.makedirs(parts[0])
     
     # Normalize img.
     img = img.astype(np.float32)
@@ -31,7 +25,7 @@ def write_float_image_normalized(fn, img):
     img = np.clip(img * 255.0, 0.0, 255.0).astype(np.uint8)
 
     # Save the image.
-    cv2.imwrite(fn, img)
+    write_image(fn, img)
 
     return img
 
@@ -57,12 +51,6 @@ def write_float_image_fixed_normalization(fn, img, m0, m1):
     Only supports writing PNG image.
     """
 
-    # Test the output directory.
-    parts = get_filename_parts(fn)
-
-    if ( not os.path.isdir(parts[0]) ):
-        os.makedirs(parts[0])
-
     # Check the dimension of img.
     assert (img.ndim == 2), "img must be a 2D array img.shape = {}. ".format( img.shape )
 
@@ -81,7 +69,7 @@ def write_float_image_fixed_normalization(fn, img, m0, m1):
     img = img.astype(np.uint8)
 
     # Save the image.
-    cv2.imwrite(fn, img)
+    write_image(fn, img)
 
     return img
 
@@ -95,12 +83,6 @@ def write_float_RGB(fn, img):
     Only supports writing PNG image.
     """
 
-    # Test the output directory.
-    parts = get_filename_parts(fn)
-
-    if ( not os.path.isdir(parts[0]) ):
-        os.makedirs(parts[0])
-
     # Check the dimension of img.
     assert (img.ndim == 3), "img.shape = {}. ".format( img.shape )
 
@@ -111,7 +93,7 @@ def write_float_RGB(fn, img):
     img = img.astype(np.uint8)
 
     # Save the image.
-    cv2.imwrite(fn, img)
+    write_image(fn, img)
 
     return img
 
