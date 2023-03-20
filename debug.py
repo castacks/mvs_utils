@@ -3,7 +3,7 @@ import inspect
 
 import torch
 
-_ENABLED = True
+_ENABLED = False
 
 def enable():
     global _ENABLED
