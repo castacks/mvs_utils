@@ -60,18 +60,20 @@ class MetadataReader(object):
             self.cam_to_camdata = dict()
 
             #Make a rig directory and initialize the rigdata struct.
-            # self.rig_path = join(self.data_dir, "rig")
-            self.rig_path = "rig"
             rig_out_dir = join(self.data_dir, "rig")
             if create_dirs:
-                if not os.path.exists(rig_out_dir):
-                    os.makedirs(rig_out_dir)
+                os.makedirs(rig_out_dir, exist_ok=True)
 
             rigdata = dict(
                 path=rig_out_dir,
                 types=self.metadata["rig_img_types"],
                 is_rig=True,
-                data=dict(frame="rbf", image_frame="rif")
+                rig_is_cam=False,
+                rig_is_cam_data=dict(
+                    cam_idx=None, # Should be an non-negative integer.
+                    cam_overlapped_types=[]
+                ), 
+                data=dict(frame="rbf", image_frame="rif", is_rig=True)
             )
 
             #Initialize camera headers and the rig_is_cam flag. The rig_is_cam flag is used if 
@@ -89,13 +91,13 @@ class MetadataReader(object):
                 cpath = join(self.data_dir, c_str)
                 cam_headers.append(c_str)
                 if create_dirs:
-                    if not os.path.exists(cpath):
-                        os.makedirs(cpath)
+                    os.makedirs(cpath, exist_ok=True)
 
                 #Also create a camera data struct that holds all important data for data collection
                 cdata = dict(
                     path=cpath,
                     types=c["img_types"],
+                    is_fig=False,
                     data=c
                 )
 
@@ -111,8 +113,8 @@ class MetadataReader(object):
                 #If a camera is the first to have an origin position at the rig frame, set the rig_is_cam
                 #flag to be true. Also include the rigdata in the list of data associated with the camera number.
                 #If it is not the first camera, warn the user. Otherwise, add the camera data to the index.
-                # if np.array_equal(np.array(c["pos"]),np.array([0.0,0.0,0.0])):
-                if np.array_equal(cam_position,np.array([0.0,0.0,0.0])):
+                # if np.array_equal(cam_position,np.array([0.0,0.0,0.0])):
+                if c["is_rig"]:
                     if self.rig_is_cam:
                         print(f"Camera {i} also is positioned at the origin (Numbering starts at 0). \
                               Since a previous camera was also positioned at the rig frame, this camera will \
@@ -122,14 +124,25 @@ class MetadataReader(object):
                     else:
                         self.rig_is_cam = True
 
-                        cdata["types"] = list(set(cdata["types"]+rigdata["types"]))
+                        # Figure out the image types.
+                        s_types_rig = set(rigdata["types"])
+                        s_types_cam = set(cdata["types"])
+                        s_types_overlapped = s_types_cam.intersection( s_types_rig )
+                        s_types_rig_only = s_types_rig.difference( s_types_overlapped )
+                        
+                        # Update rigdata.
+                        rigdata["rig_is_cam"] = True
+                        rigdata["rig_is_cam_data"]["cam_idx"] = i
+                        rigdata["rig_is_cam_data"]["cam_overlapped_types"] = list(s_types_overlapped)
+                        
+                        # Update the types of the underlying virtual camera in the simulator.
+                        # This camera must contain all the types including the rig types.
+                        cdata["types"] = list( s_types_cam.union( s_types_rig_only ) )
                         cdata.update({"is_rig":True})
                         self.cam_to_camdata.update({
                             i:cdata
                         })
 
-                        # self.rig_path = cdata["path"]
-                        self.rig_path = c_str
                     
                 self.cam_to_camdata.update({
                     i:cdata
