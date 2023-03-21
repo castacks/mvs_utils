@@ -82,7 +82,7 @@ class MetadataReader(object):
                     cam_idx=None, # Should be an non-negative integer.
                     cam_overlapped_types=[]
                 ), 
-                data=dict(frame="rbf", image_frame="rif", is_rig=True) # Hardcoded "rbf" for the simulator.
+                data=dict(frame="rbf", image_frame="rif", is_rig=True) # NOTE: Hardcoded "rbf" for the simulator.
             )
 
             cam_headers = [] # The table header for the physical cameras. If rig is cam, then
