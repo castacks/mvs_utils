@@ -33,7 +33,7 @@ class MetadataReader(object):
         types (list of str): The simulator image types.
         '''
 
-        return { t : os.path.join(self.data_dir, single_cam_path) for t in types }
+        return { t : single_cam_path for t in types }
 
     def read_metadata_and_initialize_dirs(self, metadata_path, frame_graph_path, create_dirs=True):
         '''
@@ -71,7 +71,7 @@ class MetadataReader(object):
                 os.makedirs(rig_out_dir, exist_ok=True)
 
             rigdata = dict(
-                path=rig_out_dir,
+                path='rig', 
                 types=self.metadata["rig_img_types"],
                 typed_path=self.populate_typed_path_for_single_cam(
                     self.metadata["rig_img_types"], 
@@ -82,7 +82,7 @@ class MetadataReader(object):
                     cam_idx=None, # Should be an non-negative integer.
                     cam_overlapped_types=[]
                 ), 
-                data=dict(frame="rbf", image_frame="rif", is_rig=True)
+                data=dict(frame="rbf", image_frame="rif", is_rig=True) # Hardcoded "rbf" for the simulator.
             )
 
             cam_headers = [] # The table header for the physical cameras. If rig is cam, then
@@ -95,19 +95,20 @@ class MetadataReader(object):
                 
                 #For each camera, create a directory and index that directory in the csv index.
                 c_str = f"cam{i}"
-                cpath = join(self.data_dir, c_str)
                 cam_headers.append(c_str)
+                
+                cpath = join(self.data_dir, c_str)
                 if create_dirs:
                     os.makedirs(cpath, exist_ok=True)
 
                 #Also create a camera data struct that holds all important data for data collection
                 cdata = dict(
-                    path=cpath,
+                    path=c_str,
                     types=c["img_types"],
                     typed_path=self.populate_typed_path_for_single_cam(
                         c["img_types"], 
                         c_str),
-                    is_fig=False,
+                    is_rig=False,
                     data=c
                 )
 
@@ -147,7 +148,7 @@ class MetadataReader(object):
                         # Update the file path for the overlapped types. Overlapped types live in
                         # the virtual camera directory during data collection.
                         for overlapped_type in s_types_overlapped:
-                            rigdata["typed_path"][overlapped_type] = cpath
+                            rigdata["typed_path"][overlapped_type] = c_str
                         
                         # Update the types of the underlying virtual camera in the simulator.
                         # This camera must contain all the types including the rig types.
@@ -156,7 +157,7 @@ class MetadataReader(object):
                         # Update the file path for the rig-only types. Rig-only types live in
                         # the rig virtual camera directory during data collection.
                         for rig_only_type in s_types_rig_only:
-                            cdata["typed_path"][rig_only_type] = rig_out_dir
+                            cdata["typed_path"][rig_only_type] = 'rig'
 
                         cdata.update({"is_rig":True})
                         self.cam_to_camdata.update({
