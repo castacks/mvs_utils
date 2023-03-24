@@ -1,3 +1,4 @@
 [submodule "ftensor"]
 	path = ftensor
 	url = https://github.com/huyaoyu/ftensor.git
+	branch = main
