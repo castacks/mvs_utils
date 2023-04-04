@@ -1,15 +1,21 @@
 import numpy as np
 import torch
 
+from .camera_models import Pinhole
+
 class Depth2Distance(object):
 
     def __init__(self, camera_model):
+        assert isinstance(camera_model, Pinhole), \
+            f'Expect camera_model to be a Pinhole model, but got {type(camera_model)}. '
+        
         self.camera_model = camera_model
         self._device = self.camera_model.device
         
         # Pixel coordiantes in [2, H, W]. Contiguous by default.
         self.pixel_coords = self.camera_model.pixel_coordinates()
 
+        # XYZ coordinates in [3, H, W].
         self.xyz = torch.zeros( 
                 ( 3, *self.pixel_coords.shape[1:3] ), device=self._device, dtype=torch.float32 )
         
@@ -21,11 +27,16 @@ class Depth2Distance(object):
     def device(self, d):
         self.camera_model.device = d
         self.pixel_coords = self.pixel_coords.to(device=d)
+        self.xyz = self.xyz.to(device=d)
         self._device = d
 
     def __call__(self, z):
         '''
         z: NumPy array [H, W, 1] or PyTorch tensor [1, H, W]. 
+        
+        TODO: may want to return a tensor depdending on the input.
+        Returns:
+        NumPy array [H, W], the distance image.
         '''
 
         if isinstance(z, np.ndarray):
@@ -50,4 +61,5 @@ class Depth2Distance(object):
 
         distance = torch.norm(self.xyz, dim=0)
 
+        # TODO: may want to return a tensor depdending on the input.
         return distance.cpu().numpy()
