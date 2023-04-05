@@ -2,7 +2,7 @@ import glob
 import os
 
 def get_filename_parts(fn):
-    p = os.path.split(fn)
+    p = list(os.path.split(fn))
 
     if ( "" == p[0] ):
         p[0] = "."
