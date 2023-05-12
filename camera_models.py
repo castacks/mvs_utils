@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import math
 import sys
+import matplotlib.pyplot as plt
 
 from .debug import ( show_msg, show_obj, show_sum )
 
@@ -16,6 +17,11 @@ CAMERA_MODELS = dict()
 LIDAR_MODELS = dict()
 
 LOCAL_PI = math.pi
+
+from scipy.sparse import csc_matrix
+from scipy.sparse.linalg import inv
+pinholeradtan_solver = 'torch'
+
 
 def deg2rad(deg):
     global LOCAL_PI
@@ -488,6 +494,128 @@ f'''{{
     "type": "{self.__class__.__name__}",
     "xi": {self.xi},
     "alpha": {self.alpha},
+    "fx": {self.fx},
+    "fy": {self.fy},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "fov_degree": {self.fov_degree},
+    "shape_struct": {self.ss},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy}
+}}'''
+
+@register(CAMERA_MODELS)
+class EUCM(CameraModel):
+    def __init__(self, alpha, beta, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+        '''
+        Enhanced Unified Camera Model (EUCM).
+    
+        '''
+        super(EUCM, self).__init__(
+            'eucm', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        self.alpha = alpha
+        self.beta = beta
+    
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
+        # Do nothing.
+
+    def pixel_2_ray(self, pixel_coor):
+        '''
+        The definition of the pixel projection according to the Enhanced Unified Camera Model (EUCM). Code is adapted from the original implementation in OmniCV: https://kaustubh-sadekar.github.io/OmniCV-Lib/index.html .
+
+        Arguments:
+        pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates.
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number. 
+        
+        Returns:
+        ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        pixel_coor = self.in_wrap(pixel_coor)
+        
+        # mx and my becomes float64 if pixel_coor.dtype is integer type.
+        mx = ( pixel_coor[..., 0, :] - self.cx ) / self.fx
+        my = ( pixel_coor[..., 1, :] - self.cy ) / self.fy
+
+        r_2 = mx ** 2 + my ** 2
+
+        mz = torch.real(
+            (1 - self.beta * self.alpha * self.alpha * r_2)
+            / (
+                self.alpha * torch.sqrt(1 - (2 * self.alpha - 1) *
+                                              self.beta * r_2)
+                + (1 - self.alpha)
+            )
+        )
+
+        coef = 1 / torch.sqrt(mx ** 2 + my ** 2 + mz ** 2)
+
+        x = mx * coef
+        y = my * coef
+        z = mz * coef
+
+        ray = torch.stack((x, y, z), dim=-2)
+        norm_ray = torch.linalg.norm( ray, ord=2, dim=-2, keepdim=True )
+        zero_mask = norm_ray == 0
+        norm_ray[zero_mask] = 1
+
+        # Normalize ray.
+        ray = ray / norm_ray
+
+        # Filter by FOV.
+        valid_mask = torch.logical_not(torch.isnan(z))
+
+
+        # Ray nans to zeros. # TODO(yoraish): This is probably wrong. Handle this more gracefully.
+        ray[torch.isnan(ray)] = 0.0001
+
+        return self.out_wrap(ray), self.out_wrap(valid_mask)
+
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
+        
+        Returns: 
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BXN if batched.
+        '''
+
+        point_3d = self.in_wrap(point_3d)
+
+        # torch.split results in Bx1XN.
+        x, y, z = torch.split( point_3d, 1, dim=-2 )
+
+        # If Ftensor convert to Tensor.
+        if isinstance(x, FTensor):
+            x = x.tensor()
+            y = y.tensor()
+            z = z.tensor()
+
+        x2 = x**2.0 # Note: this may promote x2 to torch.float64 if point_3d.dtype=torch.int. 
+        y2 = y**2.0
+        z2 = z**2.0
+
+        raise NotImplementedError()
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+    
+    
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "alpha": {self.alpha},
+    "beta": {self.beta},
     "fx": {self.fx},
     "fy": {self.fy},
     "cx": {self.cx},
@@ -1022,6 +1150,572 @@ class Pinhole(CameraModel):
         return f'''Pinhole
         Shape : {self.ss.shape}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
+
+@register(CAMERA_MODELS)
+class PinholeRadTan(CameraModel):
+    def __init__(self, fx, fy, cx, cy, k1, k2, p1, p2, shape_struct, in_to_tensor=False, out_to_numpy=False,device='cpu'):
+        
+        # Compute the FoV from the specified parameters.
+        im_h, im_w = shape_struct.shape 
+        fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        
+        super().__init__('PinholeRadTan', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        self.k1 = k1
+        self.k2 = k2 
+        self.p1 = p1
+        self.p2 = p2
+
+        # FoV for both longitude (x and width) and latitude (y and height).
+        self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(im_h, 2 * fy) * 180.0 / LOCAL_PI
+        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
+
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
+        # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
+        self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
+                                   [ 0,      self.fy, self.cy ],
+                                   [ 0,      0      ,      1.0]]).to(dtype=torch.float32, device=self._device)
+
+        self.inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
+                                            [ 0,      1.0/self.fy, -self.cy / self.fy],
+                                            [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
+
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        self.inv_intrinsics.to(device=d)
+        self.intrinsics.to(device=d)
+    
+
+    def distort(self,y_input,jacobian=True):
+        
+        y = y_input.clone()
+        y = self.in_wrap(y).to(dtype=torch.float32)
+
+        mx2_u = y[0] * y[0]
+        my2_u = y[1] * y[1]
+        mxy_u = y[0] * y[1]
+        rho2_u = mx2_u + my2_u
+
+        rad_dist_u = self.k1 * rho2_u + self.k2 * rho2_u * rho2_u
+        if len(y.shape) > 1:
+            n_points = y.shape[1]
+        else:
+            n_points = 1 
+
+        J = torch.zeros((2,2,n_points)).to(dtype=torch.float32, device=self._device)
+
+        if jacobian:
+            J[0,0] = 1 + rad_dist_u + self.k1 * 2.0 * mx2_u + self.k2 * rho2_u * 4 * mx2_u + 2.0 * self.p1 * y[1] + 6 * self.p2 * y[0]
+            J[1, 0] = self.k1 * 2.0 * y[0] * y[1] + self.k2 * 4 * rho2_u * y[0] * y[1]  + self.p1 * 2.0 * y[0] + 2.0 * self.p2 * y[1]
+            J[0, 1] = J[1, 0]
+            J[1, 1] = 1 + rad_dist_u + self.k1 * 2.0 * my2_u + self.k2 * rho2_u * 4 * my2_u + 6 * self.p1 * y[1] + 2.0 * self.p2 * y[0]
+
+        y[0] += y[0] * rad_dist_u + 2.0 * self.p1 * mxy_u + self.p2 * (rho2_u + 2.0 * mx2_u)
+        y[1] += y[1] * rad_dist_u + 2.0 * self.p2 * mxy_u + self.p1 * (rho2_u + 2.0 * my2_u)
+
+        return y, J
+
+
+    def undistort_single(self,y,homogeneous = False,debug=False):
+        n = 5
+        y_tmp = None
+        ybar = y.clone()
+
+        for i in range(n):
+            y_tmp = ybar.clone()
+            y_tmp, F = self.distort(y_tmp)
+            
+            F = torch.squeeze(F)
+            
+            e = y - y_tmp
+
+            du = torch.linalg.inv(F.T @ F) @ F.T @ e
+            ybar += du
+
+            if (e.dot(e) < 1e-15):
+                break
+        
+        if homogeneous:
+            ybar = torch.tensor([ybar[0],ybar[1],1.0]).to(dtype=torch.float32, device=self._device)
+
+        return ybar
+    
+    def undistort(self,y,homogeneous = False,debug=False):
+
+        n = 5
+        y_tmp = None
+        ybar = y.clone()
+
+        for i in range(n):
+            y_tmp = ybar.clone()
+            y_tmp, F = self.distort(y_tmp)
+
+            F = torch.swapaxes(F,-1,0)
+            F_block = torch.block_diag(*F).to(dtype=torch.float32, device=self._device)
+
+            # to scipy
+            if pinholeradtan_solver == 'scipy':
+                F_block = csc_matrix(F_block.cpu().numpy())
+
+            e = y - y_tmp
+            e_flat = torch.zeros((e.shape[1]*2,1)).to(dtype=torch.float32, device=self._device)
+            e_flat[::2] = e[0].reshape((-1,1))
+            e_flat[1 :: 2] = e[1].reshape((-1,1))
+
+            e = e_flat
+            if pinholeradtan_solver == 'scipy':
+                e = csc_matrix(e.cpu().numpy())
+
+            if pinholeradtan_solver == 'scipy':
+                du = inv(F_block.T @ F_block) @ F_block.T @ e
+                du = torch.tensor(du.toarray()).to(dtype=torch.float32, device=self._device)
+            else:
+                du = torch.linalg.inv(F_block.T @ F_block) @ F_block.T @ e
+            #
+            
+            ybar[0] += du[::2].flatten()
+            ybar[1] += du[1::2].flatten()
+
+            if debug:
+                print("Iteration {0}, loss: {1}".format(i,torch.linalg.norm(e)))
+                if (torch.linalg.norm(e) < 1e-15):
+                    break
+            
+        if homogeneous:
+            ybar = torch.cat((ybar,torch.ones_like(ybar[0]).reshape((1,-1))),dim=0)
+
+        return ybar
+
+
+    def normalize_point(self,y,homogeneous=False):
+        if homogeneous:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def normalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = (y[0]-self.cx)/self.fx
+        y_bar[1] = (y[1]-self.cy)/self.fy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
+        return y_bar
+    
+    def unnormalize_point(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+        if homogeneous:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def unnormalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = y[0]*self.fx+self.cx
+        y_bar[1] = y[1]*self.fy+self.cy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
+        return y_bar
+
+    def pixel_2_ray(self, uv):
+        '''
+        Arguments:
+        uv (Tensor): A 2xN Tensor contains the pixel coordinates. 
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch size.
+        
+        Returns:
+        A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = uv.shape[1]
+        xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
+
+        batch_size = 1000
+
+        time_start = time.time()
+        print("Started calculations for pinhole-radtan.. Might take a couple minutes.")
+        for start_batch_idx in tqdm(torch.arange(0,N,batch_size)):
+            end_batch = min(start_batch_idx+batch_size,N)
+
+            xyz[:,start_batch_idx:end_batch] = self.undistort(self.normalize_points(uv[:,start_batch_idx:end_batch]),homogeneous=True,debug=False)
+
+        print("Elapsed time: {0}, for {1} images.".format(time.time()-time_start,N))
+
+        # Normalize rays to be unit length.
+        xyz = xyz / torch.linalg.norm(xyz, dim = -2, keepdims= True)
+
+        # Mask points that are out of field of view.
+        # Currently returning a mask of only ones as all pixels are assumed to be with valid values, and the projection out of the image frame of all pixels is valid.
+        # The following if-statements match the dimensionality of batched inputs.
+        # NOTE(yoraish): why should there be any??
+        if len(uv.shape) == 2:
+            mask = torch.ones(uv.shape[1])
+        if len(uv.shape) == 3:
+            mask = torch.ones((uv.shape[0], uv.shape[2]))
+        
+        return self.out_wrap(xyz), \
+               self.out_wrap(mask)
+    
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number.
+        
+        Returns: 
+        A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        point_3d = self.in_wrap(point_3d).to(dtype=torch.float32)
+
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = point_3d.shape[1]
+        # for i in range(N):
+        point_3d = torch.div(point_3d,point_3d[-1,:])
+        
+        point_3d = self.unnormalize_points(self.distort(point_3d,jacobian=False)[0],homogeneous=True)
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+        # Do torch.split results in Bx1XN.
+        px, py, _ = torch.split( uv, 1, dim=-2 )
+
+        if normalized:
+            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
+            # px = px / ( self.ss.W - 1 ) * 2 - 1
+            # py = py / ( self.ss.H - 1 ) * 2 - 1
+            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
+
+        # pixel_coor = torch.stack( (px, py), dim=0 )
+        pixel_coor = torch.cat( (px, py), dim=-2 )
+
+        # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
+        valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
+        valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
+
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+        
+    
+    def __repr__(self) -> str:
+        return f'''An instance of Pinhole CameraModel
+        Height : {self.ss.shape[0]}
+        Width : {self.ss.shape[1]}
+        fx : {self.fx}
+        fy : {self.fy}
+        cx : {self.cx}
+        cy : {self.cy}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        device: {self._device}'''
+
+    def __str__(self) -> str:
+        return f'''Pinhole
+        Shape : {self.ss.shape}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
+
+class UndistortNet(torch.nn.Module):
+    """Custom Pytorch model for gradient optimization of .
+    """
+    def __init__(self,init_weights,distort_func):
+        
+        super().__init__()
+        # initialize weights with random numbers
+        # weights = torch.distributions.Uniform(0, 0.1).sample((3,))
+        # make weights torch parameters
+        self.weights = torch.nn.Parameter(init_weights)
+        self.distort_func = distort_func
+        
+    def forward(self):
+        """Implement function to be optimised. In this case, an exponential decay
+        function (a + exp(-k * X) + b),
+        """
+        return self.distort_func(self.weights)
+    
+def training_loop(model, optimizer, GT, n=1000):
+    "Training loop for torch model."
+    losses = []
+    for i in range(n):
+        preds = model()
+        loss = F.mse_loss(preds, GT).sqrt()
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        losses.append(loss)  
+    return losses
+
+
+@register(CAMERA_MODELS)
+class PinholeRadTanFast(CameraModel):
+    def __init__(self, fx, fy, cx, cy, k1, k2, p1, p2, shape_struct, in_to_tensor=False, out_to_numpy=False, device='cpu'):
+        
+        # Compute the FoV from the specified parameters.
+        im_h, im_w = shape_struct.shape 
+        fov_degree = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        
+        super().__init__('PinholeRadTan', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        self.k1 = k1
+        self.k2 = k2 
+        self.p1 = p1
+        self.p2 = p2
+
+        # FoV for both longitude (x and width) and latitude (y and height).
+        self.fov_degree_longitude = 2 * math.atan2(im_w, 2 * fx) * 180.0 / LOCAL_PI
+        self.fov_degree_latitude  = 2 * math.atan2(im_h, 2 * fy) * 180.0 / LOCAL_PI
+        print(f"Created a new fisheye camera model with lon/lat FoV of {self.fov_degree_longitude, self.fov_degree_latitude} degrees.")
+
+        if isinstance( shape_struct, dict ):
+            self.ss = ShapeStruct( **shape_struct )
+        elif isinstance( shape_struct, ShapeStruct ):
+            self.ss = shape_struct
+        else:
+            raise Exception(f'shape_struct must be a dict or ShapeStruct object. Get {type(shape_struct)}')
+        
+        # The (inverse) intrinsics matrix is fixed throughout, keep a copy here.
+        self.intrinsics = torch.tensor([[self.fx, 0      , self.cx ],
+                                   [ 0,      self.fy, self.cy ],
+                                   [ 0,      0      ,      1.0]]).to(dtype=torch.float32, device=self._device)
+
+        self.inv_intrinsics = torch.tensor([[1.0/self.fx, 0      , -self.cx / self.fx],
+                                            [ 0,      1.0/self.fy, -self.cy / self.fy],
+                                            [ 0,      0      ,                1.0]]).to(dtype=torch.float32, device=self._device)
+
+    @SensorModel.device.setter
+    def device(self, d):
+        SensorModel.device.fset(self, d)
+        self.inv_intrinsics.to(device=d)
+        self.intrinsics.to(device=d)
+    
+
+    def distort(self,y_input):
+        
+        y = y_input.clone()
+        y = self.in_wrap(y).to(dtype=torch.float32)
+
+        mx2_u = y[0] * y[0]
+        my2_u = y[1] * y[1]
+        mxy_u = y[0] * y[1]
+        rho2_u = mx2_u + my2_u
+
+        rad_dist_u = self.k1 * rho2_u + self.k2 * rho2_u * rho2_u
+
+        y_output = y.clone()
+        y_output[0] = y[0] +  y[0] * rad_dist_u + 2.0 * self.p1 * mxy_u + self.p2 * (rho2_u + 2.0 * mx2_u)
+        y_output[1] = y[1] +  y[1] * rad_dist_u + 2.0 * self.p2 * mxy_u + self.p1 * (rho2_u + 2.0 * my2_u)
+
+        return y_output
+
+    
+    def undistort(self,y,homogeneous = False,debug=False):
+
+        ybar = y.clone()
+
+        undistort_nn = UndistortNet(ybar,self.distort)
+        opt = torch.optim.Adam(undistort_nn.parameters(), lr=0.001)
+
+        loss = training_loop(undistort_nn,opt,y.clone())
+        loss = [tensor.detach().cpu().numpy() for tensor in loss]
+
+        ybar = undistort_nn.weights.detach().clone()
+
+        if debug:
+            plt.plot(loss)
+            plt.xlabel('Episode')
+            plt.ylabel('Loss')
+            plt.savefig('pinhole-radtan-opt.png')
+
+        if homogeneous:
+            ybar = torch.cat((ybar,torch.ones_like(ybar[0]).reshape((1,-1))),dim=0)
+
+        return ybar
+
+
+    def normalize_point(self,y,homogeneous=False):
+        if homogeneous:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([(y[0]-self.cx)/self.fx,(y[1]-self.cy)/self.fy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def normalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = (y[0]-self.cx)/self.fx
+        y_bar[1] = (y[1]-self.cy)/self.fy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
+        return y_bar
+    
+    def unnormalize_point(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+        if homogeneous:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy,1.0]).to(dtype=torch.float32, device=self._device)
+        else:
+            y_bar = torch.tensor([y[0]*self.fx+self.cx,y[1]*self.fy+self.cy]).to(dtype=torch.float32, device=self._device)
+        return y_bar
+    
+    def unnormalize_points(self,y,homogeneous=False):
+        y_bar = torch.zeros_like(y).to(dtype=torch.float32, device=self._device)
+
+        y_bar[0] = y[0]*self.fx+self.cx
+        y_bar[1] = y[1]*self.fy+self.cy
+        y_bar = y_bar[:2]
+
+        # print(y_bar.shape)
+        if homogeneous:
+            y_bar = torch.cat((y_bar,torch.ones_like(y_bar[0]).reshape((1,-1))),dim=0)
+       
+        return y_bar
+
+    def pixel_2_ray(self, uv):
+        '''
+        Arguments:
+        uv (Tensor): A 2xN Tensor contains the pixel coordinates. 
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch size.
+        
+        Returns:
+        A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = uv.shape[1]
+        # xyz = torch.zeros((3,N)).to(dtype=torch.float32, device=self._device)
+
+        xyz_grad = self.undistort(self.normalize_points(uv),homogeneous=True,debug=True)
+        xyz = xyz_grad.detach()
+
+        # NOTE(yoraish): why should there be any??
+        if len(uv.shape) == 2:
+            mask = torch.ones(uv.shape[1])
+        if len(uv.shape) == 3:
+            mask = torch.ones((uv.shape[0], uv.shape[2]))
+        
+        return self.out_wrap(xyz), \
+               self.out_wrap(mask)
+    
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number.
+        
+        Returns: 
+        A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        point_3d = self.in_wrap(point_3d).to(dtype=torch.float32)
+
+
+        # can we remove the for loop? Not sure, this is how Kalibr does it
+        N = point_3d.shape[1]
+        # for i in range(N):
+        point_3d = torch.div(point_3d,point_3d[-1,:])
+        
+        point_3d = self.unnormalize_points(self.distort(point_3d),homogeneous=True)
+
+        # print(point_3d.shape)
+        uv = point_3d
+        # Pixel coordinates projected from the world points. 
+        # uv_unnormalized = self.intrinsics @ point_3d
+
+        # Normalize the homogenous coordinate-points such that their z-value is 1. The expression uv_unnormalized[..., -1:, :] keeps the dimension of the tensor, which is required by the division operation since PyTorch has trouble to broadcast the operation. 
+        # uv = torch.div(uv_unnormalized, uv_unnormalized[..., -1:, :])
+
+        # Warp to desired datatype.
+        uv = self.in_wrap(uv).to(dtype=torch.float32)
+
+        # Do torch.split results in Bx1XN.
+        px, py, _ = torch.split( uv, 1, dim=-2 )
+
+        if normalized:
+            # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
+            # px = px / ( self.ss.W - 1 ) * 2 - 1
+            # py = py / ( self.ss.H - 1 ) * 2 - 1
+            # Using shape is the way for torch.nn.functional.grid_sample() with align_corners=False.
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
+
+        # pixel_coor = torch.stack( (px, py), dim=0 )
+        pixel_coor = torch.cat( (px, py), dim=-2 )
+
+        # Filter the invalid pixels by the image size. Valid mask takes on shape [B] x N
+        valid_mask_px = torch.logical_and(px < self.ss.W, px > 0)
+        valid_mask_py = torch.logical_and(py < self.ss.H, py > 0)
+        valid_mask = torch.logical_and(valid_mask_py, valid_mask_px)
+
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+        
+    
+    def __repr__(self) -> str:
+        return f'''An instance of Pinhole CameraModel
+        Height : {self.ss.shape[0]}
+        Width : {self.ss.shape[1]}
+        fx : {self.fx}
+        fy : {self.fy}
+        cx : {self.cx}
+        cy : {self.cy}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        device: {self._device}'''
+
+    def __str__(self) -> str:
+        return f'''Pinhole
+        Shape : {self.ss.shape}
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+
 
 class LiDAR(SensorModel):
     def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
