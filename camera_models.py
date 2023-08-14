@@ -13,6 +13,7 @@ from .radian import ( check_valid_range, shift_according_2_range, check_in_range
 from .shape_struct import ShapeStruct
 
 CAMERA_MODELS = dict()
+DISTORTION_MODELS = dict()
 LIDAR_MODELS = dict()
 
 LOCAL_PI = math.pi
@@ -70,6 +71,66 @@ def xyz_2_z_angle(x, y, z):
 
     return x2y2z_2_z_angle(x**2.0, y**2.0, z)
 
+class DistortionModel(object):
+    def __init__(self, name):
+        super().__init__()
+
+        self.name = name
+
+    def distort(self, pixel_coor):
+        '''
+        pixel_coor: Bx2xN Tensor.
+        '''
+        raise NotImplementedError()
+    
+    def __call__(self, pixel_coor):
+        return self.distort(pixel_coor)
+
+@register(DISTORTION_MODELS)
+class RadialTangential(DistortionModel):
+    def __init__(self, k1, k2, p1, p2, k3=0, k4=0, k5=0, k6=0):
+        '''
+        References:
+        https://github.com/ethz-asl/kalibr/wiki/supported-models#distortion-models
+        https://docs.opencv.org/3.4/da/d54/group__imgproc__transform.html#ga7dfb72c9cf9780a347fbe3d1c47e5d5a
+        '''
+        super().__init__('radtan')
+
+        self.k1 = k1
+        self.k2 = k2
+        self.p1 = p1
+        self.p2 = p2
+        self.k3 = k3
+        self.k4 = k4
+        self.k5 = k5
+        self.k6 = k6
+
+    def distort(self, pixel_coor):
+        '''
+        pixel_coor: Bx2xN Tensor.
+        '''
+        x = pixel_coor[..., 0, :]
+        y = pixel_coor[..., 1, :]
+        x2 = x**2
+        y2 = y**2
+        xy = x * y
+        r2 = x2 + y2
+        r4 = r2**2
+        r6 = r4 * r2
+
+        # Radial distortion.
+        rad_factor = 1 + self.k1 * r2 + self.k2 * r4 + self.k3 * r6
+        if self.k4 != 0 or self.k5 != 0 or self.k6 != 0:
+            rad_factor /= 1 + self.k4 * r2 + self.k5 * r4 + self.k6 * r6
+
+        x_d = x * rad_factor
+        y_d = y * rad_factor
+        
+        # Tangential distortion.
+        x_d += 2 * self.p1 * xy + self.p2 * ( r2 + 2 * x2 )
+        y_d += self.p1 * ( r2 + 2 * y2 ) + 2 * self.p2 * xy
+
+        return torch.stack( (x_d, y_d), dim=-2 )
 
 class SensorModel(object):
     def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
@@ -143,9 +204,17 @@ class SensorModel(object):
         raise NotImplementedError()
         
 class CameraModel(SensorModel):
-    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, name, fx, fy, cx, cy, fov_degree, shape_struct, 
+                 distortion_model_conf=None,
+                 in_to_tensor=False, out_to_numpy=False):
+        '''
+        A distortion model is a callable that accepts a Bx2xN Tensor and returns a Bx2xN Tensor.
+        distortion_model_conf is the dictionary for constructing the distortion model.
+        '''
         super(CameraModel, self).__init__(
             name=name, shape_struct=shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        global DISTORTION_MODELS
 
         self.fx = fx
         self.fy = fy
@@ -158,6 +227,10 @@ class CameraModel(SensorModel):
         
         # Will be populated once get_valid_mask() is called for the first time.
         self.valid_mask = None
+
+        self.distortion_model = None
+        if distortion_model_conf is not None:
+            self.distortion_model = make_object( DISTORTION_MODELS, distortion_model_conf )
 
     def _f(self):
         assert self.fx == self.fy
@@ -307,9 +380,12 @@ class CameraModel(SensorModel):
 # Usenko, Vladyslav, Nikolaus Demmel, and Daniel Cremers. "The double sphere camera model." In 2018 International Conference on 3D Vision (3DV), pp. 552-560. IEEE, 2018.
 @register(CAMERA_MODELS)
 class DoubleSphere(CameraModel):
-    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, xi, alpha, fx, fy, cx, cy, fov_degree, shape_struct, 
+                 in_to_tensor=False, out_to_numpy=False):
         super(DoubleSphere, self).__init__(
-            'double_sphere', fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'double_sphere', fx, fy, cx, cy, fov_degree, shape_struct, 
+            distortion_model_conf=None,
+            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.alpha = alpha
         self.xi = xi
@@ -348,7 +424,7 @@ class DoubleSphere(CameraModel):
         ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
         valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
         '''
-        
+
         pixel_coor = self.in_wrap(pixel_coor)
         
         # mx and my becomes float64 if pixel_coor.dtype is integer type.
@@ -538,7 +614,9 @@ class Equirectangular(CameraModel):
         self.open_span = open_span
 
         super(Equirectangular, self).__init__(
-            'equirectangular', 1, 1, 0.5, 0.5, 360, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+            'equirectangular', 1, 1, 0.5, 0.5, 360, shape_struct, 
+            distortion_model_conf=None,
+            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
         # cx, cy will be updated.
         self.set_members_by_shape_struct(self.ss)
 
@@ -714,7 +792,8 @@ f'''{{
 class Ocam(CameraModel):
     EPS = sys.float_info.epsilon
     
-    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, poly_coeff, inv_poly_coeff, cx, cy, affine_coeff, fov_degree, shape_struct, 
+                 in_to_tensor=False, out_to_numpy=False):
         '''
         The implementation is mostly based on 
         https://github.com/hyu-cvlab/omnimvs-pytorch/blob/3016a5c01f55c27eff3c019be9aee02e34aaaade/utils/ocam.py#L15
@@ -735,7 +814,9 @@ class Ocam(CameraModel):
         https://sites.google.com/site/scarabotix/ocamcalib-omnidirectional-camera-calibration-toolbox-for-matlab
         '''
         
-        super().__init__('Ocam', 1, 1, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__('ocam', 1, 1, cx, cy, fov_degree, shape_struct, 
+                         distortion_model_conf=None,
+                         in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
         
         # Polynomial coefficients starting from the highest degree.
         self.poly_coeff     = torch.as_tensor(poly_coeff).to(dtype=torch.float32)     # Only contains the coefficients.
@@ -881,17 +962,192 @@ class Ocam(CameraModel):
         
         return self.out_wrap( out ), \
                self.out_wrap( theta <= self.fov_rad / 2.0 )
-    
+
+class Omnidirectional(CameraModel):
+    def __init__(self, xi, fx, fy, cx, cy, fov_degree, shape_struct, 
+                 distortion_model_conf=None,
+                 in_to_tensor=False, out_to_numpy=False):
+        '''
+        Mei, Christopher, and Patrick Rives. "Single view point omnidirectional camera calibration 
+        from planar grids." In Proceedings 2007 ICRA.
+        '''
+        super(Omnidirectional, self).__init__(
+            'omnidirectional', fx, fy, cx, cy, fov_degree, shape_struct, 
+            distortion_model_conf=distortion_model_conf,
+            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+
+        self.xi = xi
+
+    @CameraModel.device.setter
+    def device(self, d):
+        CameraModel.device.fset(self, d)
+        # Do nothing.
+
+    def pixel_2_ray(self, pixel_coor):
+        '''
+        Arguments:
+        pixel_coor (Tensor): A 2xN Tensor contains the pixel coordinates.
+        
+        NOTE: pixel_coor can also have a dimension of Bx2xN, where B is the 
+        batch number. 
+        
+        Returns:
+        ray: A 3xN Tensor representing the 3D rays. Bx3xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BxN if batched.
+        '''
+        
+        # Raise an exception if there is a distortion model defined.
+        if self.distortion_model is not None:
+            raise NotImplementedError(
+                f'Omnidirectional camera model does not support distortion model in pixel_2_ray(). ')
+
+        pixel_coor = self.in_wrap(pixel_coor)
+        
+        # mx and my becomes float64 if pixel_coor.dtype is integer type.
+        mx = ( pixel_coor[..., 0, :] - self.cx ) / self.fx
+        my = ( pixel_coor[..., 1, :] - self.cy ) / self.fy
+        
+        r2 = mx**2.0 + my**2.0
+        mz = ( self.xi + torch.sqrt( 1 + ( 1 - self.xi**2 ) * r2 ) ) / ( r2 + 1 )
+
+        x = mz * mx
+        y = mz * my
+        z = mz - self.xi
+
+        # Need to deal with batch dim
+        ray = torch.stack( (x, y, z), dim=-2 )
+
+        # Compute the norm of ray along column direction.
+        # norm_ray = torch.linalg.norm( ray, ord=2, dim=0, keepdim=True ) # Non-batched version
+        norm_ray = torch.linalg.norm( ray, ord=2, dim=-2, keepdim=True )
+        zero_mask = norm_ray == 0
+        norm_ray[zero_mask] = 1
+
+        # Normalize ray.
+        ray = ray / norm_ray
+
+        # Filter by FOV.
+        a = xyz_2_z_angle( x, y, z )
+        valid_mask = a <= self.fov_rad / 2.0
+
+        return self.out_wrap(ray), self.out_wrap(valid_mask)
+
+    def point_3d_2_pixel(self, point_3d, normalized=False):
+        '''
+        Arguments:
+        point_3d (Tensor): A 3xN Tensor contains 3D point coordinates. 
+        normalized (bool): If True, then the returned coordinates are normalized to [-1, 1]
+        
+        NOTE: point_3d can also have a dimension of Bx3xN, where B is the 
+        batch number. 
+        
+        Returns: 
+        pixel_coor: A 2xN Tensor representing the 2D pixels. Bx2xN if batched.
+        valid_mask: A (N,) Tensor representing the valid mask. BXN if batched.
+        '''
+
+        point_3d = self.in_wrap(point_3d)
+
+        # torch.split results in Bx1XN.
+        x, y, z = torch.split( point_3d, 1, dim=-2 )
+
+        # If Ftensor convert to Tensor.
+        if isinstance(x, FTensor):
+            x = x.tensor()
+            y = y.tensor()
+            z = z.tensor()
+
+        x2 = x**2.0 # Note: this may promote x2 to torch.float64 if point_3d.dtype=torch.int. 
+        y2 = y**2.0
+        z2 = z**2.0
+
+        # Project the 3D point to the unit sphere.
+        d = torch.sqrt( x2 + y2 + z2 )
+        x_s = x / d
+        y_s = y / d
+        z_s = z / d
+
+        # Pixel coordinates. 
+        t = self.xi + z_s
+        px = self.fx / t * x_s + self.cx
+        py = self.fy / t * y_s + self.cy
+        
+        # Distortion.
+        if self.distortion_model is not None:
+            pxy = self.distortion_model( torch.cat( (px, py), dim=-2 ) )
+            px, py = torch.split( pxy, 1, dim=-2 )
+
+        if normalized:
+            px = px / self.ss.W * 2 - 1
+            py = py / self.ss.H * 2 - 1
+
+        pixel_coor = torch.cat( (px, py), dim=-2 )
+
+        # Filter by FOV.
+        a = x2y2z_2_z_angle( x2, y2, z )
+        valid_mask = a <= self.fov_rad / 2.0
+        
+        # This is for the batched dimension.
+        valid_mask = valid_mask.squeeze(-2)
+
+        return self.out_wrap(pixel_coor), self.out_wrap(valid_mask)
+
+    def get_valid_bounary(self, n_points=1000):
+        '''
+        Get an array of pixel coordinates that represent the boundary of the valid region.
+        The result array is ordered.
+        '''
+
+        # TODO: This is a direct copy of the code in the DoubleSphere class.
+        
+        # Unit length.
+        unit_length = torch.ones( (1, n_points), device=self.device, dtype=torch.float32 )
+        
+        # Find the x, y, z coordinates.
+        a_z = self.fov_rad / 2 # Angle w.r.t. the z-axis.
+        z = unit_length * math.cos( a_z )
+        
+        # Projection of the unit length onto the xy-plane.
+        r_xy = unit_length * math.sin( a_z )
+        a_x = torch.linspace( -LOCAL_PI, LOCAL_PI, n_points ) # Angle w.r.t. the x-axis.
+        x = r_xy * torch.cos( a_x )
+        y = r_xy * torch.sin( a_x )
+        
+        # Create an array of 3D points at the unit sphere along the FOV.
+        xyz = torch.cat( (x, y, z), dim=0 )
+        
+        pixel_coor, mask = self.point_3d_2_pixel(xyz)
+        return self.out_wrap(pixel_coor)
+
+    def __str__(self) -> str:
+        return \
+f'''{{
+    "type": "{self.__class__.__name__}",
+    "xi": {self.xi},
+    "fx": {self.fx},
+    "fy": {self.fy},
+    "cx": {self.cx},
+    "cy": {self.cy},
+    "fov_degree": {self.fov_degree},
+    "shape_struct": {self.ss},
+    "distortion_model": {self.distortion_model.name},
+    "in_to_tensor": {self.in_to_tensor},
+    "out_to_numpy": {self.out_to_numpy}
+}}'''
+
 @register(CAMERA_MODELS)
 class Pinhole(CameraModel):
     def __init__(self, fx, fy, cx, cy, shape_struct, 
-        in_to_tensor=False, out_to_numpy=False, name='Pinhole'):
+                 distortion_model_conf=None,
+                 in_to_tensor=False, out_to_numpy=False, name='Pinhole'):
         
         # Compute the FoV from the specified parameters.
         shape_struct = SensorModel.make_shape_struct_from_repr(shape_struct)
         fov_degree = 2 * math.atan2(shape_struct.W, 2 * fx) * 180.0 / LOCAL_PI
         
-        super().__init__(name, fx, fy, cx, cy, fov_degree, shape_struct, in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
+        super().__init__(name, fx, fy, cx, cy, fov_degree, shape_struct, 
+                         distortion_model_conf=distortion_model_conf,
+                         in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         self.set_members_by_shape_struct(shape_struct)
 
@@ -934,6 +1190,11 @@ class Pinhole(CameraModel):
         A 3xN Tensor representing the 3D rays. Bx3xN if batched.
         A (N,) Tensor representing the valid mask. BxN if batched.
         '''
+
+        # Raise an exception if there is a distortion model defined.
+        if self.distortion_model is not None:
+            raise NotImplementedError(
+                f'Pinhole camera model does not support distortion model in pixel_2_ray(). ')
 
         # Warp to desired datatype.
         uv = self.in_wrap(uv).to(dtype=torch.float32)
@@ -983,6 +1244,11 @@ class Pinhole(CameraModel):
         # Do torch.split results in Bx1XN.
         px, py, _ = torch.split( uv, 1, dim=-2 )
 
+        # Distortion.
+        if self.distortion_model is not None:
+            pxy = self.distortion_model( torch.cat( (px, py), dim=-2 ) )
+            px, py = torch.split( pxy, 1, dim=-2 )
+
         if normalized:
             # Using shape - 1 is the way for cv2.remap() and align_corners=True of torch.nn.functional.grid_sample().
             # px = px / ( self.ss.W - 1 ) * 2 - 1
@@ -1021,22 +1287,28 @@ class Pinhole(CameraModel):
         cx : {self.cx}
         cy : {self.cy}
         FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        distortion_model: {self.distortion_model.name}
         device: {self._device}'''
 
     def __str__(self) -> str:
         return f'''{self.name}
         Shape : {self.ss.shape}
-        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}'''
+        FoV degrees (lon/lat, y/x, h/w): {self.fov_degree_longitude}, {self.fov_degree_latitude}
+        distortion_model: {self.distortion_model.name}'''
 
 @register(CAMERA_MODELS)
 class SquarePinhole(Pinhole):
-    def __init__(self, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, shape_struct, 
+                 distortion_model_conf=None,
+                 in_to_tensor=False, out_to_numpy=False):
         shape_struct = ShapeStruct.read_shape_struct(shape_struct)
         assert shape_struct.W == shape_struct.H, \
             f'SquarePinhole camera model requires square image shape. Got {shape_struct}. ' 
         f = shape_struct.W / 2
         super().__init__(fx=f, fy=f, cx=f, cy=f, shape_struct=shape_struct, 
-            in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy, name='SquarePinhole')
+                         distortion_model_conf=distortion_model_conf,
+                         in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy, 
+                         name='SquarePinhole')
 
 class LiDAR(SensorModel):
     def __init__(self, name, shape_struct, in_to_tensor=False, out_to_numpy=False):
@@ -1154,7 +1426,8 @@ class Velodyne(LiDAR):
 
 @register(CAMERA_MODELS)
 class LinearSphere(CameraModel):
-    def __init__(self, fov_degree, shape_struct, in_to_tensor=False, out_to_numpy=False):
+    def __init__(self, fov_degree, shape_struct, 
+                 in_to_tensor=False, out_to_numpy=False):
         shape_struct = SensorModel.make_shape_struct_from_repr(shape_struct)
 
         super(LinearSphere, self).__init__(
@@ -1165,6 +1438,7 @@ class LinearSphere(CameraModel):
             cy=shape_struct.H / 2,
             fov_degree= fov_degree, 
             shape_struct= shape_struct, 
+            distortion_model_conf=None,
             in_to_tensor=in_to_tensor, out_to_numpy=out_to_numpy)
 
         assert self.ss.H == self.ss.W, 'The shape of the linear camera model must be a square.'
